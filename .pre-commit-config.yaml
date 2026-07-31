@@ -1,0 +1,15 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: block-commit-to-main
+        name: Block commit to main branch
+        entry: powershell -Command "if ((git rev-parse --abbrev-ref HEAD) -eq 'main') { Write-Error 'Direct commits to main are forbidden. Use dev branch.'; exit 1 } else { exit 0 }"
+        language: system
+        stages: [pre-commit]

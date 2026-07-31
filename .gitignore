@@ -1,0 +1,31 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.ruff_cache/
+.pytest_cache/
+
+# 用户数据（不提交）
+characters/*/portrait.png
+characters/*/portrait_thumb.png
+characters/*/ref.wav
+characters/*/greeting.wav
+characters/*/voice_sample.wav
+conversations/*
+trash/*
+temp_audio/*
+exports/*
+logs/*
+
+# 开发范围警示文件（必须提交，保留占位）
+!**/开发范围警示.md
+
+# 配置文件（提交模板，不提交实际配置）
+config.json
+!config.example.json
+theme_config.json
+
+# 系统
+.DS_Store
+Thumbs.db

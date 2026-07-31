@@ -1,0 +1,15 @@
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+# 迁移脚本按需求命名 vX.Y_to_vX.Y.py（动态加载，非 Python 模块）
+"migrations/*" = ["N999"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
