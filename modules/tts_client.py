@@ -41,6 +41,27 @@ GSV_SCAN_DIRS_SOVITS = [
 
 DEFAULT_MAX_CHUNK_CHARS = 800
 
+# GPT-SoVITS api_v2.py 语言代码（TTS_infer_pack v2 系列）
+LANG_MAP = {
+    "中文": "zh",
+    "日本語": "ja",
+    "English": "en",
+    "한국어": "ko",
+    "粤语": "yue",
+    "自动": "auto",
+    "auto": "auto",
+    "zh": "zh",
+    "ja": "ja",
+    "en": "en",
+    "ko": "ko",
+    "yue": "yue",
+}
+
+
+def map_tts_lang(lang: str) -> str:
+    """将界面语种名（如"中文"）映射为 api_v2 的语言代码（zh）。"""
+    return LANG_MAP.get(str(lang).strip(), "zh")
+
 
 def strip_markdown_for_tts(text: str) -> str:
     """剥离影响 TTS 的 Markdown 语法，返回纯文本。
@@ -195,6 +216,10 @@ class TTSClient(BaseManager):
         self.base = api_base_url.rstrip("/")
         self.timeout = DEFAULT_TIMEOUT
         self.serializer = serializer or TTSSerializer()
+        # 参考音频状态（api_v2 的 /tts 每次调用都需携带）
+        self.ref_audio_path = ""
+        self.prompt_text = ""
+        self.prompt_lang = "zh"
 
     # ---------- 基础请求 ----------
 
@@ -205,30 +230,37 @@ class TTSClient(BaseManager):
         return resp
 
     def check_api(self) -> bool:
-        """GET /control → 检查 API 是否存活。"""
+        """检查 GPT-SoVITS API 是否存活。
+
+        api_v2.py 无独立健康接口，/control 需 command 参数。
+        以"服务器是否有任何 HTTP 响应"作为存活判据（404 即服务在线）。
+        """
         try:
-            resp = self._get("/control")
-            return resp.json().get("status") == "ok"
+            requests.get(f"{self.base}/", timeout=min(10, self.timeout))
+            return True
+        except requests.ConnectionError:
+            return False
         except Exception as e:
             self.log("warning", f"TTS API 健康检查失败: {e}")
             return False
 
-    def set_refer_audio(self, ref_audio_path: str, prompt_text: str, prompt_language: str) -> bool:
-        """GET /set_refer_audio 设置参考音频（串行化执行）。"""
-        return self.serializer.execute(
-            self._set_refer_audio, ref_audio_path, prompt_text, prompt_language
-        )
+    def set_refer_audio(
+        self, ref_audio_path: str, prompt_text: str = "", prompt_lang: str = "zh"
+    ) -> bool:
+        """设置参考音频（串行化执行）。
 
-    def _set_refer_audio(self, ref_audio_path: str, prompt_text: str, prompt_language: str) -> bool:
+        api_v2 的 /set_refer_audio 仅接受 refer_audio_path；
+        prompt_text/prompt_lang 由本客户端暂存，/tts 调用时自动携带。
+        """
+        self.ref_audio_path = ref_audio_path
+        self.prompt_text = prompt_text
+        if prompt_lang:
+            self.prompt_lang = map_tts_lang(prompt_lang)
+        return self.serializer.execute(self._set_refer_audio, ref_audio_path)
+
+    def _set_refer_audio(self, ref_audio_path: str) -> bool:
         try:
-            self._get(
-                "/set_refer_audio",
-                {
-                    "ref_audio_path": ref_audio_path,
-                    "prompt_text": prompt_text,
-                    "prompt_language": prompt_language,
-                },
-            )
+            self._get("/set_refer_audio", {"refer_audio_path": ref_audio_path})
             self.log("debug", f"参考音频已设置: {ref_audio_path}")
             return True
         except Exception as e:
@@ -281,17 +313,21 @@ class TTSClient(BaseManager):
         last_error: Exception | None = None
         for attempt in range(3):  # 指数退避重试
             try:
-                resp = self._get(
-                    "/tts",
-                    {
-                        "text": text,
-                        "text_language": text_language,
-                        "top_k": top_k,
-                        "top_p": top_p,
-                        "temperature": temperature,
-                        "speed": speed,
-                    },
-                )
+                params = {
+                    "text": text,
+                    "text_lang": map_tts_lang(text_language),
+                    "ref_audio_path": self.ref_audio_path,
+                    "prompt_text": self.prompt_text,
+                    "prompt_lang": self.prompt_lang,
+                    "top_k": top_k,
+                    "top_p": top_p,
+                    "temperature": temperature,
+                    "speed_factor": speed,
+                    "text_split_method": "cut5",
+                    "batch_size": 1,
+                    "media_type": "wav",
+                }
+                resp = self._get("/tts", params)
                 self.log(
                     "debug",
                     f"TTS 合成成功: {len(text)}字 / {len(resp.content)} bytes",

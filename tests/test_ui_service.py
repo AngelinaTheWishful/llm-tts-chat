@@ -107,3 +107,28 @@ def test_new_session_no_character_no_greeting(tmp_path):
     ui = make_service(tmp_path)
     result = ui.new_session(None)
     assert result["messages"] == []
+
+
+def test_last_audio_file_returns_none_when_missing(tmp_path):
+    """无音频时返回 None（而非空串），防止 Gradio 把空串解析为工作目录导致 PermissionError。"""
+    ui = make_service(tmp_path)
+    ui.tts_healthy = False  # 关闭 TTS，问候语无音频
+    ui.active_character = "问候角色"
+    result = ui.new_session("问候角色")
+    assert result["messages"][0].get("audio_file") is None
+    assert result["audio_path"] is None
+    assert ui._last_audio_file(result["session_id"]) is None
+
+
+def test_last_audio_file_returns_existing_file(tmp_path):
+    from pathlib import Path
+
+    ui = make_service(tmp_path)
+    ui.tts_healthy = True
+    ui.active_character = "问候角色"
+    session = ui.new_session("问候角色")["session_id"]
+
+    # 问候语带音频，路径应指向存在的文件
+    path = ui._last_audio_file(session)
+    assert path is not None
+    assert Path(path).is_file()

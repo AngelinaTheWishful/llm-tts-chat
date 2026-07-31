@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
         "max_input_length": 2000,
         "sensitive_words": [],
         "language": "zh_CN",
+        "sidebar_collapsed": False,
     },
     "gsv_root": "",
     "external_characters": [],
@@ -117,7 +118,7 @@ class ConfigManager(BaseManager):
         config = copy.deepcopy(DEFAULT_CONFIG)
         if self.path.exists():
             try:
-                user_config = json.loads(self.path.read_text(encoding="utf-8"))
+                user_config = json.loads(self.path.read_text(encoding="utf-8-sig"))
                 _deep_merge(config, user_config)
             except (json.JSONDecodeError, OSError) as e:
                 self.log("error", f"配置加载失败，使用默认配置: {e}")

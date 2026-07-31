@@ -271,12 +271,20 @@ class UiService(BaseManager):
 
     # ---------- 工具 ----------
 
-    def _last_audio_file(self, session_id: str) -> str:
+    def _last_audio_file(self, session_id: str) -> str | None:
+        """返回最后一条带音频消息的路径；无音频时返回 None。
+
+        禁止返回空串：Gradio 的 abspath("") 会解析为工作目录并当作文件哈希，
+        导致 PermissionError。
+        """
         messages = self.conv_mgr.get_messages(session_id)
         for msg in reversed(messages):
-            if msg.get("audio_file"):
-                return str(self.conv_mgr.dir / session_id / msg["audio_file"])
-        return ""
+            audio_file = msg.get("audio_file")
+            if audio_file:
+                path = self.conv_mgr.dir / session_id / audio_file
+                if path.is_file():
+                    return str(path)
+        return None
 
     def _session_name(self, session_id: str) -> str:
         for s in self.conv_mgr.list_sessions():

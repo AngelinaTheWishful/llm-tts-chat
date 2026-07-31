@@ -12,7 +12,7 @@ from pathlib import Path
 import gradio as gr
 
 from modules.character_manager import CharManager
-from modules.config_manager import ConfigManager, encrypt_api_key
+from modules.config_manager import ConfigManager, decrypt_api_key, encrypt_api_key
 from modules.conversation_manager import ConvManager
 from modules.i18n import I18n
 from modules.logger import setup_logger
@@ -30,6 +30,16 @@ theme = Theme()
 PROJECT_ROOT = Path(__file__).resolve().parent
 CHARACTERS_DIR = PROJECT_ROOT / "characters"
 CONVERSATIONS_DIR = PROJECT_ROOT / "conversations"
+
+CHAT_HEIGHT = 500
+SIDEBAR_CSS = f"""
+#sidebar-col {{
+    height: {CHAT_HEIGHT}px;
+    overflow-y: auto;
+    padding-right: 6px;
+}}
+#sidebar-col .gradio-accordion {{ margin-bottom: 6px; }}
+"""
 
 char_mgr = CharManager(CHARACTERS_DIR, config_manager=config_mgr)
 conv_mgr = ConvManager(CONVERSATIONS_DIR)
@@ -69,7 +79,7 @@ def send_message_handler(user_input, text_lang, voice_lang):
     chatbot_value = ui_service.messages_to_chatbot(result["messages"])
     return (
         gr.update(visible=False, value=""),
-        gr.update(visible=True, value=result.get("audio_path")),
+        gr.update(visible=True, value=result.get("audio_path") or None),
         gr.update(value=chatbot_value),
         _status_text(),
         gr.update(value=""),
@@ -83,7 +93,7 @@ def new_session_handler():
     return (
         gr.update(choices=[(s["name"], s["id"]) for s in sessions], value=result["session_id"]),
         gr.update(value=chatbot_value),
-        gr.update(visible=True, value=result.get("audio_path")),
+        gr.update(visible=True, value=result.get("audio_path") or None),
         _status_text(),
     )
 
@@ -100,7 +110,7 @@ def switch_session_handler(session_id):
     chatbot_value = ui_service.messages_to_chatbot(result["messages"])
     return (
         gr.update(value=chatbot_value),
-        gr.update(visible=True, value=result.get("audio_path")),
+        gr.update(visible=True, value=result.get("audio_path") or None),
         gr.update(visible=False, value=""),
         _status_text(),
     )
@@ -277,7 +287,7 @@ def import_session_handler(file):
             gr.update(choices=choices, value=new_id),
             f"🟢 会话已导入: {new_id}",
             gr.update(value=ui_service.messages_to_chatbot(messages)),
-            gr.update(visible=True, value=audio_path),
+            gr.update(visible=True, value=audio_path or None),
         )
     return (
         gr.update(choices=choices),
@@ -334,6 +344,57 @@ def stats_handler():
     if most:
         text += f"最活跃会话: {most['name']}（{most['msg_count']} 条）"
     return gr.update(value=text)
+
+
+# ---------- 侧栏折叠 / 配置保存（Phase 9） ----------
+
+
+def persist_sidebar_state(current_visible: bool):
+    """仅持久化折叠状态，不做任何 UI 重渲染（避免 Accordion 内容丢失）。"""
+    new_visible = not current_visible
+    config_mgr.update("app", "sidebar_collapsed", not new_visible)
+    return new_visible
+
+
+def save_settings_handler(
+    gsv_root,
+    tts_url,
+    provider_name,
+    base_url,
+    api_key,
+    model,
+    max_tokens,
+    temperature,
+    text_language,
+):
+    """侧栏配置保存：写回 config.json 并即时生效（TTS 地址立即更新，LLM 下次发送生效）。"""
+    provider_name = (provider_name or "deepseek").strip()
+    config = config_mgr.get_raw()
+
+    config["gsv_root"] = gsv_root or ""
+    config["tts"]["api_base_url"] = tts_url or "http://127.0.0.1:9880"
+
+    provider = config["llm_providers"].get(provider_name, {})
+    provider.update(
+        {
+            "base_url": base_url or "",
+            "api_key": encrypt_api_key(api_key) if api_key else provider.get("api_key", ""),
+            "model": model or "",
+            "max_tokens": int(max_tokens),
+            "temperature": float(temperature),
+            "text_language": text_language,
+            "priority": provider.get("priority", 1),
+        }
+    )
+    config["llm_providers"][provider_name] = provider
+    config["llm"]["active_provider"] = provider_name
+
+    config_mgr.replace(config)
+
+    # 即时生效：TTS 地址立即更新（LLM 每次发送时从 config 读取，天然即时）
+    tts_client.base = config["tts"]["api_base_url"].rstrip("/")
+    logger.info(f"侧栏配置已保存，TTS 地址: {tts_client.base}")
+    return gr.update(value="🟢 配置已保存，即时生效")
 
 
 def health_check_handler():
@@ -462,9 +523,11 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
         finish_btn = gr.Button("完成配置", variant="primary")
 
     with gr.Group(visible=not is_first) as main_block:
-        gr.Markdown("# LLM 角色扮演聊天")
+        sidebar_initial_visible = not config_mgr.get("app", {}).get("sidebar_collapsed", False)
+        sidebar_state = gr.State(value=sidebar_initial_visible)
 
         with gr.Row():
+            sidebar_toggle_btn = gr.Button("☰ 侧栏", scale=0)
             lang_dd = gr.Dropdown(
                 choices=[("中文", "zh_CN"), ("日本語", "ja_JP"), ("English", "en_US")],
                 value=config_mgr.get("app", {}).get("language", "zh_CN"),
@@ -479,13 +542,15 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
             )
 
         with gr.Row():
-            # ---- 左栏 ----
-            with gr.Column(scale=1, min_width=280):
-                gr.Markdown("### " + i18n.t("角色"))
-                character_dropdown = gr.Dropdown(
-                    choices=list_characters(), label=i18n.t("选择角色"), value=None
-                )
-                refresh_btn = gr.Button(i18n.t("刷新角色"))
+            # ---- 左栏（可折叠 + 独立滚动条） ----
+            with gr.Column(
+                scale=1, min_width=280, visible=sidebar_initial_visible, elem_id="sidebar-col"
+            ):
+                with gr.Accordion(i18n.t("角色"), open=False):
+                    character_dropdown = gr.Dropdown(
+                        choices=list_characters(), label=i18n.t("选择角色"), value=None
+                    )
+                    refresh_btn = gr.Button(i18n.t("刷新角色"))
 
                 with gr.Accordion(i18n.t("编辑角色"), open=False):
                     editor_name = gr.Textbox(label=i18n.t("角色名称"))
@@ -505,16 +570,57 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                     editor_save_btn = gr.Button(i18n.t("保存角色"))
                     editor_status = gr.Markdown(visible=False)
 
-                gr.Markdown("### " + i18n.t("会话"))
-                new_session_btn = gr.Button(i18n.t("新建会话"))
-                session_radio = gr.Radio(
-                    choices=session_options,
-                    label=i18n.t("会话列表"),
-                    value=ui_service.active_session,
-                )
+                with gr.Accordion(i18n.t("会话"), open=False):
+                    new_session_btn = gr.Button(i18n.t("新建会话"))
+                    session_radio = gr.Radio(
+                        choices=session_options,
+                        label=i18n.t("会话列表"),
+                        value=ui_service.active_session,
+                    )
 
-                gr.Markdown("### " + i18n.t("状态"))
-                status_text = gr.Markdown(_status_text())
+                with gr.Accordion("配置", open=False):
+                    _active_cfg = config_mgr.get_active_provider_config()
+                    _active_name = config_mgr.get("llm", {}).get("active_provider", "deepseek")
+                    cfg_gsv_root = gr.Textbox(
+                        label="GPT-SoVITS 本体路径", value=config_mgr.get("gsv_root", "")
+                    )
+                    cfg_tts_url = gr.Textbox(
+                        label="TTS API 地址",
+                        value=config_mgr.get("tts", {}).get(
+                            "api_base_url", "http://127.0.0.1:9880"
+                        ),
+                    )
+                    cfg_provider = gr.Textbox(label="提供商名称", value=_active_name)
+                    cfg_base_url = gr.Textbox(
+                        label="API Base URL", value=_active_cfg.get("base_url", "")
+                    )
+                    cfg_api_key = gr.Textbox(
+                        label="API Key",
+                        type="password",
+                        value=decrypt_api_key(_active_cfg.get("api_key", "")),
+                    )
+                    cfg_model = gr.Textbox(label="模型名称", value=_active_cfg.get("model", ""))
+                    cfg_max_tokens = gr.Slider(
+                        256,
+                        8192,
+                        value=int(_active_cfg.get("max_tokens", 2048)),
+                        step=256,
+                        label="Max Tokens",
+                    )
+                    cfg_temperature = gr.Slider(
+                        0.0,
+                        2.0,
+                        value=float(_active_cfg.get("temperature", 0.8)),
+                        step=0.1,
+                        label="Temperature",
+                    )
+                    cfg_text_lang = gr.Dropdown(
+                        ["中文", "日本語", "English"],
+                        value=_active_cfg.get("text_language", "中文"),
+                        label="回复文字语种",
+                    )
+                    cfg_save_btn = gr.Button("保存配置", variant="primary")
+                    cfg_status = gr.Markdown(visible=False)
 
                 with gr.Accordion("工具", open=False):
                     with gr.Row():
@@ -529,10 +635,13 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                     stats_btn = gr.Button("查看统计")
                     stats_output = gr.Markdown(visible=False)
 
+                gr.Markdown("### " + i18n.t("状态"))
+                status_text = gr.Markdown(_status_text())
+
             # ---- 右栏 ----
             with gr.Column(scale=2):
                 chatbot = gr.Chatbot(
-                    label=i18n.t("聊天"), type="tuples", render_markdown=True, height=500
+                    label=i18n.t("聊天"), type="tuples", render_markdown=True, height=CHAT_HEIGHT
                 )
                 audio_player = gr.Audio(label=i18n.t("语音回复"), type="filepath", visible=False)
                 with gr.Row():
@@ -658,6 +767,32 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
         js="() => { setTimeout(() => location.reload(), 300); }",
     )
 
+    sidebar_toggle_btn.click(
+        fn=persist_sidebar_state,
+        inputs=[sidebar_state],
+        outputs=[sidebar_state],
+        js="""(new_state) => {
+            const col = document.getElementById('sidebar-col');
+            if (col) col.style.display = new_state ? '' : 'none';
+        }""",
+    )
+
+    cfg_save_btn.click(
+        fn=save_settings_handler,
+        inputs=[
+            cfg_gsv_root,
+            cfg_tts_url,
+            cfg_provider,
+            cfg_base_url,
+            cfg_api_key,
+            cfg_model,
+            cfg_max_tokens,
+            cfg_temperature,
+            cfg_text_lang,
+        ],
+        outputs=[cfg_status],
+    )
+
     export_btn.click(fn=export_session_handler, outputs=[export_file])
     import_btn.click(
         fn=import_session_handler,
@@ -702,7 +837,7 @@ def main() -> None:
     if not ok:
         logger.error(f"数据迁移失败: {msg}")
 
-    with gr.Blocks(title="LLM 角色扮演聊天", css=theme.to_css()) as demo:
+    with gr.Blocks(title="LLM 角色扮演聊天", css=theme.to_css() + SIDEBAR_CSS) as demo:
         _, _, status_text = build_wizard()
         demo.load(fn=health_check_handler, outputs=status_text)
 

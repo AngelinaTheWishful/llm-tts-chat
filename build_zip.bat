@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 set "SCRIPT_DIR=%~dp0"
-set "VERSION=v1.0.1"
+set "VERSION=v1.0.2"
 set "ZIP_NAME=llm-tts-chat-%VERSION%.zip"
 set "BUILD_DIR=%TEMP%\llm-tts-chat-build"
 set "OUT_DIR=%SCRIPT_DIR%exports"

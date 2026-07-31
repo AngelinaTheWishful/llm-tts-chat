@@ -2,6 +2,19 @@
 
 本文件记录所有已发布版本的应用变更。
 
+## [v1.0.2] - 2026-07-31（开发中）
+
+### 新增
+
+- **前端侧栏改进**：侧栏可折叠（JS 切换 + 持久化）、全部折叠分组、独立滚动条、配置面板可随时重配（即时生效）
+
+### 修复
+
+- **GPT-SoVITS api_v2.py 真实接口适配**：`/tts` 参数（text_lang/ref_audio_path/prompt_lang/speed_factor）、健康检查改根路径、语言映射
+- config.json 带 UTF-8 BOM 导致加载失败 → utf-8-sig 读取
+- Gradio 音频空值 `""` 被解析为工作目录导致 PermissionError → 改用 None
+- 侧栏折叠触发容器重渲染导致 Accordion 内容消失 → JS 纯 CSS 切换
+
 ## [v1.0.1] - 2026-07-31
 
 ### 修复

@@ -2,7 +2,7 @@
 
 基于 Gradio 的角色扮演聊天应用，集成 LLM（OpenAI 兼容 API）与 GPT-SoVITS 语音合成。
 
-> **v1.0.1 已发布**（2026-07-31）· [GitHub Releases](https://github.com/{GitHub 用户名}/llm-tts-chat/releases)
+> **v1.0.2 已发布**（2026-07-31）· [GitHub Releases](https://github.com/AngelinaTheWishful/llm-tts-chat/releases)
 
 ## 功能概述
 

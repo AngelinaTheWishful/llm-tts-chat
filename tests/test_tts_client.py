@@ -111,7 +111,7 @@ def test_check_api(monkeypatch):
     client = TTSClient("http://127.0.0.1:9880")
 
     def fake_get(url, params=None, timeout=30):
-        assert url.endswith("/control")
+        assert url.endswith("/")  # api_v2 无健康接口，请求根路径判断存活
         return MockResponse(json_data={"status": "ok"})
 
     monkeypatch.setattr("requests.get", fake_get)
@@ -141,7 +141,32 @@ def test_set_refer_audio_params(monkeypatch):
     ok = client.set_refer_audio("ref.wav", "今天天气好", "中文")
     assert ok is True
     assert captured["url"].endswith("/set_refer_audio")
-    assert captured["params"]["prompt_text"] == "今天天气好"
+    assert captured["params"] == {"refer_audio_path": "ref.wav"}  # api_v2 仅接受该参数
+    assert client.prompt_text == "今天天气好"
+    assert client.prompt_lang == "zh"  # 中文 → zh
+
+
+def test_synthesize_sends_api_v2_params(monkeypatch):
+    """api_v2 的 /tts 需携带 ref_audio_path / prompt_lang / text_lang / speed_factor。"""
+    client = TTSClient()
+    client.set_refer_audio("ref.wav", "提示文本", "中文")
+    captured = {}
+
+    def fake_get(url, params=None, timeout=30):
+        captured["url"] = url
+        captured["params"] = params
+        return MockResponse(content=b"WAVDATA")
+
+    monkeypatch.setattr("requests.get", fake_get)
+    data = client.synthesize("你好", "日本語", speed=1.2)
+    assert data == b"WAVDATA"
+    assert captured["url"].endswith("/tts")
+    p = captured["params"]
+    assert p["text_lang"] == "ja"  # 日本語 → ja
+    assert p["ref_audio_path"] == "ref.wav"
+    assert p["prompt_lang"] == "zh"
+    assert p["prompt_text"] == "提示文本"
+    assert p["speed_factor"] == 1.2
 
 
 def test_synthesize_retry_then_success(monkeypatch):

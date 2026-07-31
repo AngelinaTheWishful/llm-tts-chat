@@ -30,7 +30,8 @@
     "summarize_trigger_rounds": 20,
     "max_input_length": 2000,
     "sensitive_words": [],
-    "language": "zh_CN"
+    "language": "zh_CN",
+    "sidebar_collapsed": false
   },
   "gsv_root": "C:/GPT-SoVITS/GPT-SoVITS-v2pro-20250604",
   "external_characters": [],
