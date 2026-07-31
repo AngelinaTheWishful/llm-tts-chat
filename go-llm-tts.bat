@@ -1,13 +1,12 @@
 @echo off
-chcp 65001 >nul
 set "SCRIPT_DIR=%~dp0"
 set "VENV_PY=%SCRIPT_DIR%venv\Scripts\python.exe"
 
-echo [INFO] Х╞╥Г║╝Д©² GPT-SoVITS API (api_v2.py) Е╥╡Е°╗Х©░Х║▄Д╦╜
-echo [INFO] Е░╞Е┼╗ LLM Х╖▓Х┴╡Ф┴╝Ф╪■Х│┼Е╓╘...
+echo [INFO] гКх╥╠ё GPT-SoVITS API (api_v2.py) рятзткппжп
+echo [INFO] фТ╤╞ LLM ╫ги╚╟ГящадлЛ...
 
 if not exist "%VENV_PY%" (
-    echo [ERROR] Ф°╙Ф┴╬Е┬╟Х≥ Ф▀÷Г▌╞Е╒┐О╪▄Х╞╥Е┘┬Х©░Х║▄ install_deps.bat
+    echo [ERROR] н╢ур╣╫пИдБ╩╥╬Ёё╛гКохткпп install_deps.bat
     pause
     exit /b 1
 )
