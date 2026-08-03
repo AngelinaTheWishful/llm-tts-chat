@@ -485,6 +485,46 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
     else:
         check("B18 侧栏宽度保存", False, "端点缺失")
 
+    # 章节八十六：移动端响应式 CSS 注入
+    try:
+        html = requests.get(base, timeout=10).text
+        check("B19 移动端媒体查询", "@media (max-width: 900px)" in html and "main-row" in html)
+    except Exception as e:
+        check("B19 移动端媒体查询", False, str(e))
+
+    # 章节六十九~七十一：角色卡导入（JSON 卡 → 导入 → 角色列表出现）
+    if has("import_card_handler") and has("refresh_characters_handler"):
+        import json as _json
+
+        from gradio_client import utils as _gc_utils
+
+        card_path = work / "import_card.json"
+        card_path.write_text(
+            _json.dumps(
+                {
+                    "name": "e2e测试卡",
+                    "description": "自动导入验证",
+                    "personality": "测试",
+                    "scenario": "测试场景",
+                    "first_mes": "你好，测试导入成功。",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        try:
+            call("import_card_handler", _gc_utils.handle_file(str(card_path)), timeout=30)
+            r = call("refresh_characters_handler", timeout=30)
+            choices = []
+            for u in flatten_updates(r):
+                choices.extend(u.get("choices") or [])
+            names = [c[1] if isinstance(c, (list, tuple)) else str(c) for c in choices]
+            check("B20 角色卡导入", any("e2e测试卡" in n for n in names), f"names={names[:3]}")
+        except Exception as e:
+            check("B20 角色卡导入", False, str(e))
+    else:
+        check("B20 角色卡导入", False, "端点缺失")
+
 
 def run_server_checks():
     work = Path(tempfile.mkdtemp(prefix="llm_tts_e2e_"))

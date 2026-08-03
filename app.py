@@ -58,6 +58,19 @@ SIDEBAR_CSS = f"""
 #sidebar-resizer:hover, #sidebar-resizer.active {{ background: rgba(0,0,0,0.15); }}
 body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: none !important; }}
 #sidebar-width-state {{ display: none !important; }}
+/* 章节八十六：移动端/响应式适配 */
+@media (max-width: 900px) {{
+    #top-row {{ flex-wrap: wrap; }}
+    #main-row {{ flex-wrap: wrap; }}
+    #sidebar-col {{
+        flex: 0 0 100% !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        max-height: 40vh;
+    }}
+    #sidebar-resizer {{ display: none !important; }}
+}}
 """
 
 # 章节八十五：侧栏拖动调整宽度初始化 JS（页面加载即注入）
@@ -207,6 +220,36 @@ def select_character_handler(name):
 
 def refresh_characters_handler():
     return gr.update(choices=list_characters())
+
+
+def import_card_handler(file):
+    """导入角色卡（章节六十九~七十一：自动检测格式）。"""
+    if isinstance(file, dict):  # gradio_client 上传后可能传 FileData
+        file = file.get("path") or file.get("name") or None
+    if not file:
+        return (
+            gr.update(value="🔴 请选择角色卡文件"),
+            gr.update(choices=list_characters()),
+        )
+    try:
+        imported, warnings = char_mgr.import_card(file)
+    except Exception as e:
+        return (
+            gr.update(value=f"🔴 导入失败: {e}"),
+            gr.update(choices=list_characters()),
+        )
+    lines = []
+    if imported:
+        lines.append("🟢 导入成功: " + "、".join(imported))
+    else:
+        lines.append("🔴 未导入任何角色")
+    lines.extend("⚠️ " + w for w in warnings[:6])
+    if len(warnings) > 6:
+        lines.append(f"⚠️ 等共 {len(warnings)} 条警告")
+    return (
+        gr.update(value="\n".join(lines)),
+        gr.update(choices=list_characters()),
+    )
 
 
 # ---------- 角色编辑（章节二十八） ----------
@@ -874,7 +917,7 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
         sidebar_initial_visible = not config_mgr.get("app", {}).get("sidebar_collapsed", False)
         sidebar_state = gr.State(value=sidebar_initial_visible)
 
-        with gr.Row():
+        with gr.Row(elem_id="top-row"):
             sidebar_toggle_btn = gr.Button("☰ 侧栏", scale=0)
             lang_dd = gr.Dropdown(
                 choices=[("中文", "zh_CN"), ("日本語", "ja_JP"), ("English", "en_US")],
@@ -889,7 +932,7 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                 scale=1,
             )
 
-        with gr.Row():
+        with gr.Row(elem_id="main-row"):
             # ---- 左栏（可折叠 + 独立滚动条） ----
             with gr.Column(
                 scale=1, min_width=200, visible=sidebar_initial_visible, elem_id="sidebar-col"
@@ -899,6 +942,13 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                         choices=list_characters(), label=i18n.t("选择角色"), value=None
                     )
                     refresh_btn = gr.Button(i18n.t("刷新角色"))
+                    card_import_file = gr.File(
+                        label="导入角色卡（TavernAI/RisuAI/Chub/CAI）",
+                        type="filepath",
+                        file_types=[".png", ".json", ".risuai", ".txt"],
+                    )
+                    card_import_btn = gr.Button("导入角色卡")
+                    card_import_status = gr.Markdown(visible=False)
 
                 with gr.Accordion(i18n.t("编辑角色"), open=False):
                     editor_name = gr.Textbox(label=i18n.t("角色名称"))
@@ -1291,6 +1341,12 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
     refresh_btn.click(
         fn=refresh_characters_handler,
         outputs=[character_dropdown],
+    )
+
+    card_import_btn.click(
+        fn=import_card_handler,
+        inputs=[card_import_file],
+        outputs=[card_import_status, character_dropdown],
     )
 
     editor_save_btn.click(

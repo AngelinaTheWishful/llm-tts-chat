@@ -15,6 +15,11 @@ from pathlib import Path
 from PIL import Image
 
 from modules.base_manager import BaseManager
+from modules.card_importer import (
+    card_to_avatar_png,
+    normalize_to_character,
+    parse_cards,
+)
 
 REQUIRED_FILES = ["character.json"]
 PORTRAIT_SIZE = (512, 512)
@@ -209,6 +214,54 @@ class CharManager(BaseManager):
 
         warnings.extend(self.validate_package(name))
         return warnings
+
+    def import_card(self, source: str | Path) -> tuple[list[str], list[str]]:
+        """导入角色卡（TavernAI/RisuAI/Chub/CAI，章节六十九~七十一）。
+
+        返回 (成功导入的角色名列表, 警告列表)。
+        """
+        source = Path(source)
+        cards, png_avatar, parse_warnings = parse_cards(source)
+        warnings: list[str] = list(parse_warnings)
+        imported: list[str] = []
+
+        for idx, card in enumerate(cards):
+            character = normalize_to_character(card)
+            name = character["name"]
+            # 同名冲突：追加后缀
+            if (self.dir / self._sanitize_name(name)).exists():
+                suffix = f"_{idx}" if len(cards) > 1 else "_2"
+                name = f"{name}{suffix}"
+                character["name"] = name
+
+            char_dir = self.dir / self._sanitize_name(name)
+            char_dir.mkdir(parents=True, exist_ok=True)
+            (char_dir / "character.json").write_text(
+                json.dumps(character, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            # 头像：PNG 卡使用图片本身；JSON 卡提取内嵌头像
+            avatar = card_to_avatar_png(card, png_avatar if (png_avatar and idx == 0) else None)
+            if avatar:
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+                    tf.write(avatar)
+                    tmp_path = tf.name
+                try:
+                    self.update_portrait(name, tmp_path)
+                except Exception as e:
+                    warnings.append(f"{name} 头像处理失败: {e}")
+                finally:
+                    Path(tmp_path).unlink(missing_ok=True)
+            else:
+                warnings.append(f"{name} 无头像数据（可稍后在编辑中上传）")
+
+            imported.append(name)
+            self.log("info", f"角色卡已导入: {name}")
+
+        if not imported:
+            warnings.append("未导入任何角色")
+        return imported, warnings
 
     def validate_package(self, name: str) -> list[str]:
         """验证角色文件夹完整性，返回警告列表。"""

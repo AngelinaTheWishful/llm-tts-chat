@@ -2,7 +2,7 @@
 
 基于 Gradio 的角色扮演聊天应用，集成 LLM（OpenAI 兼容 API）与 GPT-SoVITS 语音合成。
 
-> **v1.1.1 已发布**（2026-08-03）· [GitHub Releases](https://github.com/AngelinaTheWishful/llm-tts-chat/releases)
+> **v1.1.2 已发布**（2026-08-03）· [GitHub Releases](https://github.com/AngelinaTheWishful/llm-tts-chat/releases)
 
 ## 功能概述
 
@@ -10,6 +10,8 @@
 - **GPT-SoVITS TTS 语音合成**：角色音色克隆，长文本分片合成，音量标准化
 - **多会话管理**：新建/切换/删除/重命名/导出/导入（zip）
 - **角色系统**：JSON 配置 + 头像 + 参考音频 + Lorebook 世界观知识库
+- **角色卡导入**：支持 TavernAI（PNG/JSON）、RisuAI、Chub、Character.AI 角色卡自动检测导入（含头像）
+- **移动端适配**：窄屏（≤900px）自动切换上下堆叠布局
 - **角色编辑**：WebUI 表单编辑（性格/口癖/背景/CoT/Lorebook/头像）
 - **消息收藏/搜索/统计**：星标收藏、会话内搜索、全局统计看板
 - **训练结果管理**：GPT-SoVITS 训练产物一键打包归档（`gsv_training/`）、中间素材清理、归档恢复、自动检测训练完成、角色音色联动
