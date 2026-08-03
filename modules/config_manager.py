@@ -40,6 +40,7 @@ DEFAULT_CONFIG = {
         "sensitive_words": [],
         "language": "zh_CN",
         "sidebar_collapsed": False,
+        "sidebar_width": 320,
     },
     "memory": {
         "enabled": True,

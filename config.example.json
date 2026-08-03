@@ -31,7 +31,8 @@
     "max_input_length": 2000,
     "sensitive_words": [],
     "language": "zh_CN",
-    "sidebar_collapsed": false
+    "sidebar_collapsed": false,
+    "sidebar_width": 320
   },
   "memory": {
     "enabled": true,

@@ -2,7 +2,7 @@
 
 基于 Gradio 的角色扮演聊天应用，集成 LLM（OpenAI 兼容 API）与 GPT-SoVITS 语音合成。
 
-> **v1.1.0 开发中**（2026-08-03）· [GitHub Releases](https://github.com/AngelinaTheWishful/llm-tts-chat/releases)
+> **v1.1.1 已发布**（2026-08-03）· [GitHub Releases](https://github.com/AngelinaTheWishful/llm-tts-chat/releases)
 
 ## 功能概述
 
@@ -16,6 +16,7 @@
 - **长期记忆（RAG）**：角色级/全局记忆库，自动记住用户偏好与事实，跨会话生效（规则提取 + 可选 LLM 提取）
 - **会话回收站**：删除的会话进入回收站可恢复，满 30 天提醒清理
 - **高级设置**：性能/会话超时/通知音效/代理 全可配置；代理注入环境变量真实生效
+- **侧栏可调整**：侧栏可拖动调整宽度（200~600px）并可一键折叠/展开，宽度与折叠状态持久化
 - **会话级 LLM 提供商**：每个会话可单独指定使用的提供商，其余跟随全局
 - **多语言界面**：中文/日本語/English 热切换
 - **主题**：浅色/深色 + 自定义颜色

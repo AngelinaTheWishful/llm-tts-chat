@@ -35,13 +35,82 @@ CHARACTERS_DIR = PROJECT_ROOT / "characters"
 CONVERSATIONS_DIR = PROJECT_ROOT / "conversations"
 
 CHAT_HEIGHT = 500
+_SIDEBAR_W = int(config_mgr.get("app", {}).get("sidebar_width", 320))
 SIDEBAR_CSS = f"""
 #sidebar-col {{
     height: {CHAT_HEIGHT}px;
     overflow-y: auto;
     padding-right: 6px;
+    flex: 0 0 {_SIDEBAR_W}px;
+    width: {_SIDEBAR_W}px;
+    min-width: 200px;
+    max-width: 600px;
 }}
 #sidebar-col .gradio-accordion {{ margin-bottom: 6px; }}
+#sidebar-resizer {{
+    width: 5px;
+    flex-shrink: 0;
+    cursor: col-resize;
+    align-self: stretch;
+    background: transparent;
+    user-select: none;
+}}
+#sidebar-resizer:hover, #sidebar-resizer.active {{ background: rgba(0,0,0,0.15); }}
+body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: none !important; }}
+#sidebar-width-state {{ display: none !important; }}
+"""
+
+# 章节八十五：侧栏拖动调整宽度初始化 JS（页面加载即注入）
+INIT_JS = """
+(function () {
+    const MIN = 200, MAX = 600;
+    const KEY = 'llm_tts_sidebar_width';
+    function init() {
+        const col = document.getElementById('sidebar-col');
+        const res = document.getElementById('sidebar-resizer');
+        if (!col || !res) { setTimeout(init, 300); return; }
+        const apply = function (w) {
+            w = Math.max(MIN, Math.min(MAX, w));
+            col.style.width = w + 'px';
+            col.style.flexBasis = w + 'px';
+        };
+        const saved = localStorage.getItem(KEY);
+        if (saved) { apply(parseInt(saved, 10) || 320); }
+        // 初始即折叠（config sidebar_collapsed）时联动隐藏分隔条
+        if (col.style.display === 'none' || !col.offsetParent) {
+            res.style.display = 'none';
+        }
+        let dragging = false, startX = 0, startW = 0;
+        res.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            dragging = true;
+            startX = e.clientX;
+            startW = parseInt(col.style.width, 10) || 320;
+            res.classList.add('active');
+            document.body.classList.add('resizing');
+        });
+        document.addEventListener('mousemove', function (e) {
+            if (!dragging) { return; }
+            apply(startW + (e.clientX - startX));
+        });
+        document.addEventListener('mouseup', function () {
+            if (!dragging) { return; }
+            dragging = false;
+            res.classList.remove('active');
+            document.body.classList.remove('resizing');
+            const w = parseInt(col.style.width, 10) || 320;
+            localStorage.setItem(KEY, String(w));
+            const wrap = document.getElementById('sidebar-width-state');
+            const input = wrap ? wrap.querySelector('input') : null;
+            if (input) {
+                input.value = w;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        });
+    }
+    init();
+})();
 """
 
 char_mgr = CharManager(CHARACTERS_DIR, config_manager=config_mgr)
@@ -630,6 +699,16 @@ def persist_sidebar_state(current_visible: bool):
     return new_visible
 
 
+def save_sidebar_width(width):
+    """保存侧栏宽度（章节八十五：拖动结束由前端隐藏组件派发触发）。"""
+    try:
+        config_mgr.update("app", "sidebar_width", int(width))
+        logger.info(f"侧栏宽度已保存: {width}")
+        return ""
+    except (TypeError, ValueError):
+        return ""
+
+
 def save_settings_handler(
     gsv_root,
     tts_url,
@@ -813,7 +892,7 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
         with gr.Row():
             # ---- 左栏（可折叠 + 独立滚动条） ----
             with gr.Column(
-                scale=1, min_width=280, visible=sidebar_initial_visible, elem_id="sidebar-col"
+                scale=1, min_width=200, visible=sidebar_initial_visible, elem_id="sidebar-col"
             ):
                 with gr.Accordion(i18n.t("角色"), open=False):
                     character_dropdown = gr.Dropdown(
@@ -1056,6 +1135,10 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                 gr.Markdown("### " + i18n.t("状态"))
                 status_text = gr.Markdown(_status_text())
 
+            # ---- 章节八十五：侧栏可拖动分隔条 + 宽度同步隐藏组件 ----
+            gr.HTML('<div id="sidebar-resizer" title="拖动调整侧栏宽度"></div>')
+            sidebar_width_state = gr.Number(elem_id="sidebar-width-state")
+
             # ---- 右栏 ----
             with gr.Column(scale=2):
                 chatbot = gr.Chatbot(
@@ -1250,8 +1333,18 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
         outputs=[sidebar_state],
         js="""(new_state) => {
             const col = document.getElementById('sidebar-col');
+            const res = document.getElementById('sidebar-resizer');
             if (col) col.style.display = new_state ? '' : 'none';
+            if (res) res.style.display = new_state ? '' : 'none';
+            return new_state;
         }""",
+    )
+
+    # 章节八十五：拖动结束后由前端隐藏组件派发，写回 config.app.sidebar_width
+    sidebar_width_state.change(
+        fn=save_sidebar_width,
+        inputs=[sidebar_width_state],
+        outputs=[],
     )
 
     cfg_save_btn.click(
@@ -1342,7 +1435,11 @@ def main() -> None:
     if not ok:
         logger.error(f"数据迁移失败: {msg}")
 
-    with gr.Blocks(title="LLM 角色扮演聊天", css=theme.to_css() + SIDEBAR_CSS) as demo:
+    with gr.Blocks(
+        title="LLM 角色扮演聊天",
+        css=theme.to_css() + SIDEBAR_CSS,
+        js=INIT_JS,
+    ) as demo:
         _, _, status_text, trash_status = build_wizard()
         demo.load(fn=status_and_trash_handler, outputs=[status_text, trash_status])
 
