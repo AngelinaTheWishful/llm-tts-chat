@@ -11,6 +11,8 @@ import json
 import random
 import shutil
 import string
+import threading
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -36,73 +38,194 @@ class ConvManager(BaseManager):
         convs_dir: str | Path,
         max_history_rounds: int = 4,
         summarize_trigger_rounds: int = 20,
+        trash_dir: str | Path | None = None,
     ):
         super().__init__("conversation")
         self.dir = Path(convs_dir)
         self.dir.mkdir(exist_ok=True)
+        self.trash_dir = Path(trash_dir) if trash_dir else (self.dir.parent / "trash" / "sessions")
+        self.trash_dir.mkdir(parents=True, exist_ok=True)
         self.max_history_rounds = max_history_rounds
         self.summarize_trigger_rounds = summarize_trigger_rounds
+        # R2: 全写操作共用写锁（Gradio 队列并发时保护 messages.json 等文件）
+        self._lock = threading.RLock()
         # 全量内存缓存（章节二十五）：启动/首次读取时加载，写操作同步更新
         self._messages_cache: dict[str, list[dict]] = {}
+        # R8: 会话元数据缓存（name/created_at/updated_at），避免每次列表全量读文件
+        self._sessions_meta: dict[str, dict] = {}
 
     def load_all(self) -> None:
         """启动时将所有会话消息加载到内存缓存。"""
         for sdir in self.dir.iterdir():
             if sdir.is_dir():
                 self._read_messages(sdir)
+                self._read_meta(sdir)
 
     # ---------- 会话生命周期 ----------
 
     def list_sessions(self) -> list[dict]:
-        """返回 [{id, name, msg_count, created_at, updated_at}, ...]。"""
+        """返回 [{id, name, msg_count, created_at, updated_at}, ...]（元数据走内存缓存 R8）。"""
         sessions: list[dict] = []
         for sdir in sorted(self.dir.iterdir(), reverse=True):
             if not sdir.is_dir():
                 continue
-            messages = self._read_messages(sdir)
+            meta = self._read_meta(sdir)
             sessions.append(
                 {
                     "id": sdir.name,
-                    "name": self._read_name(sdir),
-                    "msg_count": len(messages),
-                    "created_at": self._read_text(sdir / "created_at.txt") or sdir.name,
-                    "updated_at": self._read_text(sdir / "updated_at.txt") or "",
+                    "name": meta["name"],
+                    "msg_count": len(self._read_messages(sdir)),
+                    "created_at": meta["created_at"],
+                    "updated_at": meta["updated_at"],
                 }
             )
         return sessions
 
+    def _read_meta(self, sdir: Path) -> dict:
+        """读取/缓存会话元数据。"""
+        sid = sdir.name
+        if sid in self._sessions_meta:
+            return self._sessions_meta[sid]
+        meta = {
+            "name": self._read_name(sdir),
+            "created_at": self._read_text(sdir / "created_at.txt") or sdir.name,
+            "updated_at": self._read_text(sdir / "updated_at.txt") or "",
+        }
+        self._sessions_meta[sid] = meta
+        return meta
+
+    def _invalidate_meta(self, session_id: str) -> None:
+        self._sessions_meta.pop(session_id, None)
+
     def create_session(self, name: str = "") -> str:
         """创建新会话，返回 session_id。"""
-        session_id = generate_session_id()
-        sdir = self.dir / session_id
-        sdir.mkdir(parents=True, exist_ok=True)
-        (sdir / "audio").mkdir(exist_ok=True)
-        self._write_json(sdir / "messages.json", [])
-        self._write_text(sdir / "summary.txt", "")
-        self._write_text(sdir / "name.txt", name or "新会话")
-        self._write_text(sdir / "created_at.txt", _now_stamp())
-        self._write_text(sdir / "updated_at.txt", _now_stamp())
-        self._messages_cache[session_id] = []
-        self.log("info", f"会话已创建: {session_id} ({name})")
-        return session_id
+        with self._lock:
+            session_id = generate_session_id()
+            sdir = self.dir / session_id
+            sdir.mkdir(parents=True, exist_ok=True)
+            (sdir / "audio").mkdir(exist_ok=True)
+            self._write_json(sdir / "messages.json", [])
+            self._write_text(sdir / "summary.txt", "")
+            self._write_text(sdir / "name.txt", name or "新会话")
+            self._write_text(sdir / "created_at.txt", _now_stamp())
+            self._write_text(sdir / "updated_at.txt", _now_stamp())
+            self._messages_cache[session_id] = []
+            self._invalidate_meta(session_id)
+            self.log("info", f"会话已创建: {session_id} ({name})")
+            return session_id
 
-    def delete_session(self, session_id: str) -> bool:
-        """删除会话文件夹（含所有音频）。"""
-        sdir = self.dir / session_id
-        if not sdir.exists():
-            return False
-        shutil.rmtree(str(sdir), ignore_errors=True)
-        self._messages_cache.pop(session_id, None)
-        self.log("info", f"会话已删除: {session_id}")
-        return True
+    def delete_session(self, session_id: str, permanent: bool = False) -> bool:
+        """删除会话。
+
+        - permanent=False（默认）：移入回收站 trash/sessions/（带时间戳，R3），可恢复
+        - permanent=True：直接删除（清空回收站时使用）
+        """
+        with self._lock:
+            sdir = self.dir / session_id
+            if not sdir.exists():
+                return False
+            if permanent:
+                shutil.rmtree(str(sdir), ignore_errors=True)
+            else:
+                target = self.trash_dir / f"{session_id}_deleted_{_now_stamp()}"
+                shutil.move(str(sdir), str(target))
+                self.log("info", f"会话已删除（移入回收站）: {session_id}")
+            self._messages_cache.pop(session_id, None)
+            self._invalidate_meta(session_id)
+            return True
+
+    # ---------- 会话回收站（R3） ----------
+
+    def _trash_item(self, path: Path) -> dict:
+        """解析回收站项元数据。"""
+        stamp = ""
+        name_parts = path.name.rsplit("_deleted_", 1)
+        original_sid = name_parts[0] if name_parts else path.name
+        if len(name_parts) == 2:
+            stamp = name_parts[1]
+        deleted_at = ""
+        try:
+            deleted_at = datetime.strptime(stamp, "%Y%m%d_%H%M%S").isoformat()
+        except ValueError:
+            deleted_at = ""
+        return {
+            "id": path.name,
+            "original_id": original_sid,
+            "deleted_at": deleted_at,
+            "size": sum(f.stat().st_size for f in path.rglob("*") if f.is_file()),
+        }
+
+    def list_trash(self) -> list[dict]:
+        """列出回收站会话。"""
+        if not self.trash_dir.exists():
+            return []
+        items = []
+        for p in sorted(self.trash_dir.iterdir(), reverse=True):
+            if p.is_dir():
+                items.append(self._trash_item(p))
+        return items
+
+    def restore_from_trash(self, trash_id: str) -> str | None:
+        """从回收站恢复会话，返回新的 session_id。"""
+        with self._lock:
+            src = self.trash_dir / trash_id
+            if not src.exists():
+                return None
+            original_sid = self._trash_item(src)["original_id"]
+            target = self.dir / original_sid
+            if target.exists():
+                original_sid = f"{original_sid}_restored_{_now_stamp()}"
+                target = self.dir / original_sid
+            shutil.move(str(src), str(target))
+            self._invalidate_meta(original_sid)
+            self.log("info", f"会话已从回收站恢复: {original_sid}")
+            return original_sid
+
+    def empty_trash(self, older_than_days: int | None = None) -> int:
+        """清空回收站，可仅清理超过 N 天的项，返回删除数量。"""
+        removed = 0
+        with self._lock:
+            for p in self.trash_dir.iterdir():
+                if not p.is_dir():
+                    continue
+                if older_than_days is not None:
+                    stamp = self._trash_item(p)["deleted_at"]
+                    try:
+                        deleted = datetime.fromisoformat(stamp)
+                    except ValueError:
+                        continue
+                    if (datetime.now() - deleted).days < older_than_days:
+                        continue
+                shutil.rmtree(str(p), ignore_errors=True)
+                removed += 1
+        if removed:
+            self.log("info", f"回收站清理完成: {removed} 项")
+        return removed
+
+    def trash_expired(self, days: int = 30) -> list[dict]:
+        """返回回收站中已超过 days 天的项（用于 UI 提醒用户清理，R3）。"""
+        expired = []
+        now = datetime.now()
+        for item in self.list_trash():
+            if not item["deleted_at"]:
+                continue
+            try:
+                deleted = datetime.fromisoformat(item["deleted_at"])
+            except ValueError:
+                continue
+            if (now - deleted).days >= days:
+                expired.append(item)
+        return expired
 
     def rename_session(self, session_id: str, new_name: str) -> bool:
         """重命名会话。"""
-        sdir = self.dir / session_id
-        if not sdir.exists():
-            return False
-        self._write_text(sdir / "name.txt", new_name)
-        return True
+        with self._lock:
+            sdir = self.dir / session_id
+            if not sdir.exists():
+                return False
+            self._write_text(sdir / "name.txt", new_name)
+            self._invalidate_meta(session_id)
+            return True
 
     def session_exists(self, session_id: str) -> bool:
         return (self.dir / session_id).exists()
@@ -123,32 +246,64 @@ class ConvManager(BaseManager):
         content: str,
         audio_data: bytes | None = None,
     ) -> dict:
-        """追加消息。有 audio_data 时保存为 audio/msg_N.wav。"""
-        sdir = self.dir / session_id
-        if not sdir.exists():
-            raise FileNotFoundError(f"会话不存在: {session_id}")
+        """追加消息。有 audio_data 时保存为 audio/msg_N.wav。每条消息分配唯一 msg_id（R5）。"""
+        with self._lock:
+            sdir = self.dir / session_id
+            if not sdir.exists():
+                raise FileNotFoundError(f"会话不存在: {session_id}")
 
-        messages = self._read_messages(sdir)
-        msg_index = len(messages)
+            messages = self._read_messages(sdir)
+            msg_index = len(messages)
 
-        message: dict = {
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-        }
+            message: dict = {
+                "msg_id": uuid.uuid4().hex[:12],
+                "role": role,
+                "content": content,
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+            }
 
-        if audio_data:
-            audio_dir = sdir / "audio"
-            audio_dir.mkdir(exist_ok=True)
-            audio_file = f"audio/msg_{msg_index}.wav"
-            (audio_dir / f"msg_{msg_index}.wav").write_bytes(audio_data)
-            message["audio_file"] = audio_file
+            if audio_data:
+                audio_dir = sdir / "audio"
+                audio_dir.mkdir(exist_ok=True)
+                audio_file = f"audio/msg_{msg_index}.wav"
+                (audio_dir / f"msg_{msg_index}.wav").write_bytes(audio_data)
+                message["audio_file"] = audio_file
 
-        messages.append(message)
-        self._write_json(sdir / "messages.json", messages)
-        self._messages_cache[session_id] = messages
-        self._write_text(sdir / "updated_at.txt", _now_stamp())
-        return message
+            messages.append(message)
+            self._write_json(sdir / "messages.json", messages)
+            self._messages_cache[session_id] = messages
+            self._write_text(sdir / "updated_at.txt", _now_stamp())
+            self._invalidate_meta(session_id)
+            return message
+
+    def remove_last_message(self, session_id: str, role: str | None = None) -> dict | None:
+        """删除最后一条消息（R4：LLM 失败时回滚刚保存的用户消息）。
+
+        从后向前查找 role 匹配的消息并删除，含对应音频文件清理。
+        """
+        with self._lock:
+            sdir = self.dir / session_id
+            if not sdir.exists():
+                return None
+            messages = self._read_messages(sdir)
+            target_idx = None
+            for i in range(len(messages) - 1, -1, -1):
+                if role is None or messages[i].get("role") == role:
+                    target_idx = i
+                    break
+            if target_idx is None:
+                return None
+            removed = messages.pop(target_idx)
+            audio_file = removed.get("audio_file")
+            if audio_file:
+                audio_path = sdir / audio_file
+                audio_path.unlink(missing_ok=True)
+            self._write_json(sdir / "messages.json", messages)
+            self._messages_cache[session_id] = messages
+            self._write_text(sdir / "updated_at.txt", _now_stamp())
+            self._invalidate_meta(session_id)
+            self.log("debug", f"已删除消息（回滚）: {session_id} role={role}")
+            return removed
 
     # ---------- 上下文构建 / 摘要 ----------
 
@@ -172,32 +327,63 @@ class ConvManager(BaseManager):
 
     def maybe_summarize(self, session_id: str, summarize_fn=None) -> str:
         """总轮数超阈值时触发摘要压缩，返回新摘要（未触发返回空串）。"""
-        if self.total_rounds(session_id) < self.summarize_trigger_rounds:
-            return ""
+        with self._lock:
+            if self.total_rounds(session_id) < self.summarize_trigger_rounds:
+                return ""
 
-        sdir = self.dir / session_id
+            sdir = self.dir / session_id
+            messages = self.get_messages(session_id)
+            if not messages or summarize_fn is None:
+                return ""
+
+            old_summary = self._read_text(sdir / "summary.txt")
+            history = messages[: -self.max_history_rounds * 2]  # 除最近 N 轮外的全部
+            source = history if history else messages
+
+            if old_summary:
+                history_for_summary = [
+                    {"role": "user", "content": f"已有摘要：{old_summary}"},
+                    *source,
+                ]
+            else:
+                history_for_summary = source
+
+            new_summary = summarize_fn(history_for_summary)
+            self._write_text(sdir / "summary.txt", new_summary)
+
+            # 仅保留最近 N 轮，其余压缩进摘要
+            kept = messages[-self.max_history_rounds * 2 :]
+            self._write_json(sdir / "messages.json", kept)
+            self._messages_cache[session_id] = kept
+            self._invalidate_meta(session_id)
+            # R5：清理已不存在消息的收藏（收藏内保留内容副本）
+            self._prune_orphan_favorites(session_id)
+            self.log("info", f"会话摘要已更新: {session_id}")
+            return new_summary
+
+    def _prune_orphan_favorites(self, session_id: str) -> None:
+        """删除引用已不存在消息（msg_id/index）的收藏条目（R5）。"""
+        path = self._favorites_path(session_id)
+        if not path.exists():
+            return
         messages = self.get_messages(session_id)
-        if not messages or summarize_fn is None:
-            return ""
-
-        old_summary = self._read_text(sdir / "summary.txt")
-        history = messages[: -self.max_history_rounds * 2]  # 除最近 N 轮外的全部
-        source = history if history else messages
-
-        if old_summary:
-            history_for_summary = [{"role": "user", "content": f"已有摘要：{old_summary}"}, *source]
-        else:
-            history_for_summary = source
-
-        new_summary = summarize_fn(history_for_summary)
-        self._write_text(sdir / "summary.txt", new_summary)
-
-        # 仅保留最近 N 轮，其余压缩进摘要
-        kept = messages[-self.max_history_rounds * 2 :]
-        self._write_json(sdir / "messages.json", kept)
-        self._messages_cache[session_id] = kept
-        self.log("info", f"会话摘要已更新: {session_id}")
-        return new_summary
+        known_msg_ids = {m.get("msg_id") for m in messages}
+        kept = []
+        for fav in self.list_favorites(session_id):
+            msg_id = fav.get("msg_id")
+            idx = fav.get("msg_index")
+            if msg_id:
+                if msg_id in known_msg_ids:
+                    kept.append(fav)
+            elif isinstance(idx, int) and 0 <= idx < len(messages):
+                # 旧版 index 型收藏：消息仍在则保留并升级为 msg_id
+                if messages[idx].get("msg_id"):
+                    fav["msg_id"] = messages[idx]["msg_id"]
+                kept.append(fav)
+            else:
+                self.log("debug", f"清理孤儿收藏: {session_id} msg_index={idx}")
+        if len(kept) != len(self.list_favorites(session_id)):
+            self._write_json(path, kept)
 
     def update_summary(self, session_id: str, summary: str) -> None:
         sdir = self.dir / session_id
@@ -220,43 +406,71 @@ class ConvManager(BaseManager):
         except (json.JSONDecodeError, OSError):
             return []
 
+    def _message_msg_id(self, session_id: str, msg_index: int) -> str | None:
+        """返回指定下标消息的 msg_id（不存在返回 None）。"""
+        messages = self.get_messages(session_id)
+        if msg_index < 0 or msg_index >= len(messages):
+            return None
+        return messages[msg_index].get("msg_id")
+
     def add_favorite(
         self, session_id: str, msg_index: int, tags: list[str] | None = None, note: str = ""
     ) -> bool:
-        """收藏指定消息。"""
-        messages = self.get_messages(session_id)
-        if msg_index < 0 or msg_index >= len(messages):
-            return False
-        msg = messages[msg_index]
+        """收藏指定消息（以 msg_id 为唯一标识，R5）。"""
+        with self._lock:
+            messages = self.get_messages(session_id)
+            if msg_index < 0 or msg_index >= len(messages):
+                return False
+            msg = messages[msg_index]
+            msg_id = msg.get("msg_id")
 
-        favorites = self.list_favorites(session_id)
-        if any(f.get("msg_index") == msg_index for f in favorites):
-            return False
+            favorites = self.list_favorites(session_id)
+            # 去重以 msg_id 为准（msg_index 在摘要压缩后会失效，不可作为主键）
+            if msg_id:
+                if any(f.get("msg_id") == msg_id for f in favorites):
+                    return False
+            elif any(f.get("msg_index") == msg_index for f in favorites):
+                return False
 
-        favorites.append(
-            {
-                "msg_index": msg_index,
-                "version_index": 0,
-                "content": msg.get("content", ""),
-                "audio_file": msg.get("audio_file", ""),
-                "timestamp": msg.get("timestamp", ""),
-                "tags": tags or [],
-                "note": note,
-            }
-        )
-        self._write_json(self._favorites_path(session_id), favorites)
-        return True
+            favorites.append(
+                {
+                    "msg_id": msg_id or "",
+                    "msg_index": msg_index,
+                    "version_index": 0,
+                    "content": msg.get("content", ""),
+                    "audio_file": msg.get("audio_file", ""),
+                    "timestamp": msg.get("timestamp", ""),
+                    "tags": tags or [],
+                    "note": note,
+                }
+            )
+            self._write_json(self._favorites_path(session_id), favorites)
+            return True
 
     def remove_favorite(self, session_id: str, msg_index: int) -> bool:
-        favorites = self.list_favorites(session_id)
-        remaining = [f for f in favorites if f.get("msg_index") != msg_index]
-        if len(remaining) == len(favorites):
-            return False
-        self._write_json(self._favorites_path(session_id), remaining)
-        return True
+        with self._lock:
+            favorites = self.list_favorites(session_id)
+            msg_id = self._message_msg_id(session_id, msg_index)
+
+            def _matches(fav: dict) -> bool:
+                if msg_id:
+                    return fav.get("msg_id") == msg_id
+                return fav.get("msg_index") == msg_index
+
+            remaining = [f for f in favorites if not _matches(f)]
+            if len(remaining) == len(favorites):
+                return False
+            self._write_json(self._favorites_path(session_id), remaining)
+            return True
 
     def is_favorite(self, session_id: str, msg_index: int) -> bool:
-        return any(f.get("msg_index") == msg_index for f in self.list_favorites(session_id))
+        msg_id = self._message_msg_id(session_id, msg_index)
+        for f in self.list_favorites(session_id):
+            if msg_id and f.get("msg_id") == msg_id:
+                return True
+            if not msg_id and f.get("msg_index") == msg_index:
+                return True
+        return False
 
     # ---------- 搜索（章节七十三） ----------
 
@@ -374,44 +588,46 @@ class ConvManager(BaseManager):
     def import_session(self, zip_path: str | Path) -> str | None:
         """从 zip 导入会话，返回新 session_id（路径穿越防护）。"""
         zip_path = Path(zip_path)
-        session_id = generate_session_id()
-        sdir = self.dir / session_id
-        sdir.mkdir(parents=True, exist_ok=True)
-        (sdir / "audio").mkdir(exist_ok=True)
+        with self._lock:
+            session_id = generate_session_id()
+            sdir = self.dir / session_id
+            sdir.mkdir(parents=True, exist_ok=True)
+            (sdir / "audio").mkdir(exist_ok=True)
 
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            for member in zf.namelist():
-                member_path = Path(member)
-                # 路径穿越防护
-                if member_path.is_absolute() or ".." in member_path.parts:
-                    self.log("warning", f"跳过不安全路径: {member}")
-                    continue
-                target = (sdir / member_path).resolve()
-                if not str(target).startswith(str(sdir.resolve())):
-                    self.log("warning", f"跳过越界路径: {member}")
-                    continue
-                zf.extract(member, sdir)
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                for member in zf.namelist():
+                    member_path = Path(member)
+                    # 路径穿越防护
+                    if member_path.is_absolute() or ".." in member_path.parts:
+                        self.log("warning", f"跳过不安全路径: {member}")
+                        continue
+                    target = (sdir / member_path).resolve()
+                    if not str(target).startswith(str(sdir.resolve())):
+                        self.log("warning", f"跳过越界路径: {member}")
+                        continue
+                    zf.extract(member, sdir)
 
-        messages_file = sdir / "messages.json"
-        if not messages_file.exists():
-            self.log("error", f"导入的会话缺少 messages.json: {zip_path}")
-            shutil.rmtree(str(sdir), ignore_errors=True)
-            return None
-        try:
-            messages = json.loads(messages_file.read_text(encoding="utf-8"))
-            if not isinstance(messages, list):
-                raise ValueError("messages.json 不是数组")
-        except (json.JSONDecodeError, ValueError):
-            self.log("error", f"导入的会话 messages.json 格式无效: {zip_path}")
-            shutil.rmtree(str(sdir), ignore_errors=True)
-            return None
+            messages_file = sdir / "messages.json"
+            if not messages_file.exists():
+                self.log("error", f"导入的会话缺少 messages.json: {zip_path}")
+                shutil.rmtree(str(sdir), ignore_errors=True)
+                return None
+            try:
+                messages = json.loads(messages_file.read_text(encoding="utf-8"))
+                if not isinstance(messages, list):
+                    raise ValueError("messages.json 不是数组")
+            except (json.JSONDecodeError, ValueError):
+                self.log("error", f"导入的会话 messages.json 格式无效: {zip_path}")
+                shutil.rmtree(str(sdir), ignore_errors=True)
+                return None
 
-        self._write_text(sdir / "name.txt", f"导入会话 {_now_stamp()}")
-        self._write_text(sdir / "created_at.txt", _now_stamp())
-        self._write_text(sdir / "updated_at.txt", _now_stamp())
-        self._messages_cache[session_id] = messages
-        self.log("info", f"会话已导入: {session_id}")
-        return session_id
+            self._write_text(sdir / "name.txt", f"导入会话 {_now_stamp()}")
+            self._write_text(sdir / "created_at.txt", _now_stamp())
+            self._write_text(sdir / "updated_at.txt", _now_stamp())
+            self._messages_cache[session_id] = messages
+            self._invalidate_meta(session_id)
+            self.log("info", f"会话已导入: {session_id}")
+            return session_id
 
     # ---------- 文件读写工具 ----------
 

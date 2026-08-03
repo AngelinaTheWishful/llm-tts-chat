@@ -59,12 +59,17 @@ def setup(tmp_path):
             "audio_normalization": {"enabled": True, "target_dB": -3.0, "global_volume": 1.0},
             "prompt_protection": {"mode": "A"},
             "app": {"max_input_length": 2000, "sensitive_words": []},
+            "memory": {"enabled": True, "scope": "character", "recall_limit": 5},
         }
     )
 
     char_mgr = CharManager(tmp_path / "chars", config_manager=cm)
     conv_mgr = ConvManager(tmp_path / "convs")
-    ui = UiService(cm, char_mgr, conv_mgr, FakeTTS())
+    from modules.memory_store import MemoryStore
+
+    ui = UiService(
+        cm, char_mgr, conv_mgr, FakeTTS(), memory_store=MemoryStore(tmp_path / "memories")
+    )
     ui.tts_healthy = True
     return cm, char_mgr, conv_mgr, ui
 

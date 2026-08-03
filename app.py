@@ -12,12 +12,13 @@ from pathlib import Path
 import gradio as gr
 
 from modules.character_manager import CharManager
-from modules.config_manager import ConfigManager, decrypt_api_key, encrypt_api_key
+from modules.config_manager import ConfigManager, apply_proxy_env, encrypt_api_key
 from modules.conversation_manager import ConvManager
 from modules.i18n import I18n
 from modules.logger import setup_logger
 from modules.migration import MigrationManager
 from modules.theme import Theme
+from modules.training_ops import TrainingOps, format_size
 from modules.tts_client import TTSClient
 from modules.ui_service import UiService
 
@@ -26,6 +27,8 @@ config_mgr = ConfigManager()
 i18n = I18n()
 i18n.switch(config_mgr.get("app", {}).get("language", "zh_CN"))
 theme = Theme()
+# R10：启动即按配置注入代理环境变量（requests/httpx 默认生效）
+apply_proxy_env(config_mgr.get("proxy"))
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CHARACTERS_DIR = PROJECT_ROOT / "characters"
@@ -45,6 +48,13 @@ char_mgr = CharManager(CHARACTERS_DIR, config_manager=config_mgr)
 conv_mgr = ConvManager(CONVERSATIONS_DIR)
 tts_client = TTSClient(config_mgr.get("tts", {}).get("api_base_url", "http://127.0.0.1:9880"))
 ui_service = UiService(config_mgr, char_mgr, conv_mgr, tts_client)
+
+_gt_cfg = config_mgr.get("gsv_training", {})
+training_ops = TrainingOps(
+    gsv_root=_gt_cfg.get("gsv_root", ""),
+    archive_dir=_gt_cfg.get("archive_dir", ""),
+    restore_dir=_gt_cfg.get("restore_dir", ""),
+)
 
 session_options = [(s["name"], s["id"]) for s in conv_mgr.list_sessions()]
 
@@ -77,8 +87,11 @@ def send_message_handler(user_input, text_lang, voice_lang):
             gr.update(value=""),
         )
     chatbot_value = ui_service.messages_to_chatbot(result["messages"])
+    # R7：TTS 不可用时给出可见提示（黄色），而非静默无语音
+    notice = result.get("tts_notice") or ""
+    banner_value = f"🟡 {notice}" if notice else ""
     return (
-        gr.update(visible=False, value=""),
+        gr.update(visible=bool(notice), value=banner_value),
         gr.update(visible=True, value=result.get("audio_path") or None),
         gr.update(value=chatbot_value),
         _status_text(),
@@ -203,6 +216,7 @@ def save_character_handler(
     chain_of_thought,
     lorebook_text,
     portrait_path,
+    training_voice,
 ):
     """保存角色编辑表单。"""
     name = (char_name or "").strip()
@@ -227,6 +241,16 @@ def save_character_handler(
     character.setdefault("lorebook", {})
     character["lorebook"]["enabled"] = bool(entries)
     character["lorebook"]["entries"] = entries
+
+    # 训练音色联动（章节八十二）：选择已恢复实验后写入音色预设
+    if training_voice:
+        restored = training_ops.find_restored_weights(training_voice)
+        if restored["gpt"] or restored["sovits"]:
+            rs = character.setdefault("recommended_settings", {})
+            if restored["gpt"]:
+                rs["gpt_model"] = restored["gpt"]
+            if restored["sovits"]:
+                rs["sovits_model"] = restored["sovits"]
 
     char_mgr.save_character(character)
 
@@ -346,6 +370,256 @@ def stats_handler():
     return gr.update(value=text)
 
 
+# ---------- 会话回收站（R3） ----------
+
+
+def delete_session_handler():
+    """删除当前会话（移入回收站）。"""
+    if not ui_service.active_session:
+        return (
+            gr.update(value=""),
+            gr.update(value=[]),
+            gr.update(visible=False, value=None),
+            _status_text(),
+            gr.update(value="🔴 请先选择会话"),
+        )
+    sid = ui_service.active_session
+    ui_service.delete_session(sid)
+    sessions = conv_mgr.list_sessions()
+    return (
+        gr.update(choices=[(s["name"], s["id"]) for s in sessions], value=None),
+        gr.update(value=[]),
+        gr.update(visible=False, value=None),
+        _status_text(),
+        gr.update(value="🟢 会话已删除，可在「工具-回收站」恢复"),
+    )
+
+
+def trash_hint_text() -> str:
+    """回收站满 30 天提醒（R3）。"""
+    expired = conv_mgr.trash_expired(30)
+    if expired:
+        return f"🔔 回收站有 {len(expired)} 个会话已满 30 天，建议在工具中清理"
+    return ""
+
+
+def refresh_trash_handler():
+    trash = conv_mgr.list_trash()
+    choices = [
+        (f"{t['original_id']}（{str(t['deleted_at'])[:16].replace('T', ' ')}）", t["id"])
+        for t in trash
+    ]
+    return gr.update(choices=choices), gr.update(value=trash_hint_text())
+
+
+def restore_trash_handler(trash_id):
+    if not trash_id:
+        return gr.update(value="🔴 请先选择要恢复的会话")
+    sid = conv_mgr.restore_from_trash(trash_id)
+    if not sid:
+        return gr.update(value="🔴 恢复失败")
+    sessions = conv_mgr.list_sessions()
+    return (
+        gr.update(value=f"🟢 已恢复会话: {sid}"),
+        gr.update(choices=[(s["name"], s["id"]) for s in sessions]),
+    )
+
+
+def empty_trash_handler():
+    n = conv_mgr.empty_trash()
+    return gr.update(value=f"🟢 已清空回收站（{n} 项）"), gr.update(choices=[])
+
+
+def status_and_trash_handler():
+    """健康检查 + 回收站提醒合并（供 30s 定时器与页面加载）。"""
+    ui_service.check_health()
+    return gr.update(value=_status_text()), gr.update(value=trash_hint_text())
+
+
+# ---------- 会话级 LLM 提供商（R12） ----------
+
+
+def current_session_provider_handler(session_id):
+    if not session_id:
+        return gr.update(value="")
+    p = ui_service.get_session_provider(session_id)
+    return gr.update(value=p or "跟随全局")
+
+
+def set_session_provider_handler(provider):
+    if not ui_service.active_session:
+        return gr.update(value="🔴 请先选择会话")
+    ok = ui_service.set_session_provider(ui_service.active_session, provider)
+    if not ok:
+        return gr.update(value="🔴 设置失败")
+    label = provider or "跟随全局"
+    return gr.update(value=f"🟢 本会话提供商: {label}")
+
+
+# ---------- 高级设置（R10） ----------
+
+
+def save_advanced_settings_handler(
+    device,
+    max_llm_concurrency,
+    max_tts_concurrency,
+    idle_minutes,
+    warning_minutes,
+    notif_enabled,
+    sound_file,
+    volume,
+    proxy_enabled,
+    http,
+    https,
+    no_proxy,
+    mem_enabled,
+    mem_scope,
+    recall_limit,
+    mem_llm,
+):
+    cfg = config_mgr.get_raw()
+    perf = cfg.setdefault("performance", {})
+    perf["device"] = device or "auto"
+    perf["max_llm_concurrency"] = int(max_llm_concurrency or 2)
+    perf["max_tts_concurrency"] = int(max_tts_concurrency or 1)
+    st = cfg.setdefault("session_timeout", {})
+    st["idle_minutes"] = int(idle_minutes or 30)
+    st["warning_minutes"] = int(warning_minutes or 25)
+    notif = cfg.setdefault("notification_sound", {})
+    notif["enabled"] = bool(notif_enabled)
+    notif["sound_file"] = (sound_file or "").strip()
+    notif["volume"] = float(volume or 0.7)
+    proxy = cfg.setdefault("proxy", {})
+    proxy["enabled"] = bool(proxy_enabled)
+    proxy["http"] = (http or "").strip()
+    proxy["https"] = (https or "").strip()
+    proxy["no_proxy"] = [x.strip() for x in (no_proxy or "").split(",") if x.strip()]
+    memory = cfg.setdefault("memory", {})
+    memory["enabled"] = bool(mem_enabled)
+    memory["scope"] = mem_scope or "character"
+    memory["recall_limit"] = int(recall_limit or 5)
+    memory["extract_with_llm"] = bool(mem_llm)
+    config_mgr.replace(cfg)
+    # R10：代理真实接线（注入环境变量）
+    apply_proxy_env(proxy)
+    logger.info("高级设置已保存（性能/会话超时/通知音效/代理/记忆）")
+    return gr.update(value="🟢 高级设置已保存，即时生效")
+
+
+def clear_memory_handler():
+    """清空当前作用域记忆。"""
+    scope = config_mgr.get("memory", {}).get("scope", "character")
+    key = "global" if scope == "global" else (ui_service.active_character or "default")
+    n = ui_service.memory_store.clear(scope=scope, key=key)
+    return gr.update(value=f"🟢 已清空记忆（{n} 条）")
+
+
+# ---------- 训练管理（章节八十二） ----------
+
+
+def refresh_training_choices():
+    """刷新训练管理面板的实验/归档/恢复下拉。"""
+    experiments = [e["experiment"] for e in training_ops.scan_experiments()]
+    archives = [a["path"] for a in training_ops.list_archives()]
+    restored = training_ops.list_restored()
+    return (
+        gr.update(choices=experiments),
+        gr.update(choices=archives),
+        gr.update(choices=restored),
+    )
+
+
+def preview_training_handler(experiment):
+    if not experiment:
+        return gr.update(value="🔴 请先选择训练实验")
+    result = training_ops.preview_pack(experiment)
+    if not result["ok"]:
+        return gr.update(value=f"🔴 {result['error']}")
+    lines = [
+        f"## 预览打包「{experiment}」",
+        f"- 归档: {result['zip']}",
+        f"- 文件数: {len(result['files'])} 大小: {format_size(result['size'])}",
+        "",
+        "### 文件清单",
+    ]
+    lines += [f"- {f}" for f in result["files"]]
+    return gr.update(value="\n".join(lines))
+
+
+def pack_training_handler(experiment):
+    if not experiment:
+        return gr.update(value="🔴 请先选择训练实验")
+    result = training_ops.pack_experiment(experiment)
+    if not result["ok"]:
+        return gr.update(value=f"🔴 {result['error']}")
+    msg = (
+        f"🟢 打包完成: {result['zip']}"
+        f"（{len(result['files'])} 文件，{format_size(result['size'])}）"
+    )
+    if config_mgr.get("gsv_training", {}).get("cleanup_after_pack", True):
+        clean = training_ops.cleanup_intermediates(experiment)
+        if clean["ok"]:
+            msg += f"\n🟢 中间素材已清理: {clean.get('cleaned', 0)} 项"
+        else:
+            msg += f"\n🔴 清理失败: {clean.get('error', '')}"
+    return gr.update(value=msg)
+
+
+def restore_training_handler(archive_path, write_back):
+    if not archive_path:
+        return gr.update(value="🔴 请先选择归档 zip")
+    result = training_ops.restore_archive(archive_path, write_back=bool(write_back))
+    if not result["ok"]:
+        return gr.update(value=f"🔴 {result['error']}")
+    msg = f"🟢 已恢复: {result['dest']}"
+    if result["written_back"]:
+        msg += f"（写回 {len(result['written_back'])} 文件）"
+    return gr.update(value=msg)
+
+
+def auto_detect_handler():
+    """自动检测训练完成：默认仅提醒，auto_full 时自动打包清理。"""
+    gt = config_mgr.get("gsv_training", {})
+    if not gt.get("auto_detect", False):
+        return gr.update(value="")
+    completed = training_ops.detect_completed(idle_minutes=10)
+    if not completed:
+        return gr.update(value="")
+
+    lines = []
+    for c in completed:
+        if c["has_archive"]:
+            continue
+        if gt.get("auto_full", False):
+            pack = training_ops.pack_experiment(c["experiment"])
+            if pack["ok"] and gt.get("cleanup_after_pack", True):
+                training_ops.cleanup_intermediates(c["experiment"])
+            lines.append(f"- {c['experiment']}（{c['size_text']}）→ 已自动打包清理")
+        else:
+            lines.append(f"- {c['experiment']}（{c['size_text']}，未归档）")
+    if not lines:
+        return gr.update(value="")
+    hint = (
+        "\n\n可在「训练管理」面板选择实验后点击「打包并清理」"
+        if not gt.get("auto_full", False)
+        else ""
+    )
+    return gr.update(value="🔔 疑似训练完成:\n" + "\n".join(lines) + hint)
+
+
+def save_training_settings_handler(gsv_root, cleanup_after, auto_detect, auto_full):
+    """保存训练管理配置（即时生效）。"""
+    cfg = config_mgr.get_raw()
+    gt = cfg.setdefault("gsv_training", {})
+    gt["gsv_root"] = gsv_root or ""
+    gt["cleanup_after_pack"] = bool(cleanup_after)
+    gt["auto_detect"] = bool(auto_detect)
+    gt["auto_full"] = bool(auto_full)
+    config_mgr.replace(cfg)
+    training_ops.gsv_root = Path(gsv_root).resolve() if gsv_root else Path("")
+    return gr.update(value="🟢 训练配置已保存，即时生效")
+
+
 # ---------- 侧栏折叠 / 配置保存（Phase 9） ----------
 
 
@@ -395,11 +669,6 @@ def save_settings_handler(
     tts_client.base = config["tts"]["api_base_url"].rstrip("/")
     logger.info(f"侧栏配置已保存，TTS 地址: {tts_client.base}")
     return gr.update(value="🟢 配置已保存，即时生效")
-
-
-def health_check_handler():
-    ui_service.check_health()
-    return gr.update(value=_status_text())
 
 
 def _status_text() -> str:
@@ -567,6 +836,12 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                         label=i18n.t("Lorebook（关键词:内容 每行一条）"), lines=5
                     )
                     editor_portrait = gr.Image(label=i18n.t("上传头像"), type="filepath")
+                    editor_voice_dd = gr.Dropdown(
+                        choices=training_ops.list_restored(),
+                        label=i18n.t("训练音色（已恢复）"),
+                        info=i18n.t("选择后保存将写入音色预设"),
+                        value=None,
+                    )
                     editor_save_btn = gr.Button(i18n.t("保存角色"))
                     editor_status = gr.Markdown(visible=False)
 
@@ -577,10 +852,13 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                         label=i18n.t("会话列表"),
                         value=ui_service.active_session,
                     )
+                    delete_session_btn = gr.Button(i18n.t("删除会话（入回收站）"))
+                    delete_session_status = gr.Markdown(visible=False)
 
                 with gr.Accordion("配置", open=False):
                     _active_cfg = config_mgr.get_active_provider_config()
                     _active_name = config_mgr.get("llm", {}).get("active_provider", "deepseek")
+                    _provider_names = list(config_mgr.get("llm_providers", {}).keys())
                     cfg_gsv_root = gr.Textbox(
                         label="GPT-SoVITS 本体路径", value=config_mgr.get("gsv_root", "")
                     )
@@ -594,10 +872,12 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                     cfg_base_url = gr.Textbox(
                         label="API Base URL", value=_active_cfg.get("base_url", "")
                     )
+                    # R11：API Key 前端遮蔽——不回填明文，留空保持不变
                     cfg_api_key = gr.Textbox(
                         label="API Key",
                         type="password",
-                        value=decrypt_api_key(_active_cfg.get("api_key", "")),
+                        value="",
+                        placeholder="已保存密钥，留空保持不变",
                     )
                     cfg_model = gr.Textbox(label="模型名称", value=_active_cfg.get("model", ""))
                     cfg_max_tokens = gr.Slider(
@@ -619,8 +899,100 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                         value=_active_cfg.get("text_language", "中文"),
                         label="回复文字语种",
                     )
+                    # R12：本会话 LLM 提供商覆盖
+                    cfg_session_provider = gr.Dropdown(
+                        choices=[("跟随全局", "")] + [(n, n) for n in _provider_names],
+                        value="",
+                        label="本会话提供商（可选）",
+                        info="选择后仅本会话使用该提供商",
+                    )
                     cfg_save_btn = gr.Button("保存配置", variant="primary")
                     cfg_status = gr.Markdown(visible=False)
+
+                with gr.Accordion("高级设置", open=False):
+                    _perf = config_mgr.get("performance", {})
+                    _st = config_mgr.get("session_timeout", {})
+                    _notif = config_mgr.get("notification_sound", {})
+                    _proxy = config_mgr.get("proxy", {})
+                    _mem = config_mgr.get("memory", {})
+                    gr.Markdown("### 性能")
+                    adv_device = gr.Dropdown(
+                        ["auto", "GPU", "CPU"],
+                        value=_perf.get("device", "auto"),
+                        label="设备选择",
+                    )
+                    adv_llm_conc = gr.Slider(
+                        1,
+                        8,
+                        value=int(_perf.get("max_llm_concurrency", 2)),
+                        step=1,
+                        label="LLM 最大并发数",
+                    )
+                    adv_tts_conc = gr.Slider(
+                        1,
+                        4,
+                        value=int(_perf.get("max_tts_concurrency", 1)),
+                        step=1,
+                        label="TTS 最大并发数",
+                    )
+                    gr.Markdown("### 会话超时")
+                    adv_idle = gr.Slider(
+                        5,
+                        120,
+                        value=int(_st.get("idle_minutes", 30)),
+                        step=5,
+                        label="闲置分钟数",
+                    )
+                    adv_warn = gr.Slider(
+                        1,
+                        60,
+                        value=int(_st.get("warning_minutes", 25)),
+                        step=1,
+                        label="预警分钟数",
+                    )
+                    gr.Markdown("### 通知音效")
+                    adv_notif_enabled = gr.Checkbox(
+                        value=_notif.get("enabled", True), label="启用通知音效"
+                    )
+                    adv_sound_file = gr.Textbox(
+                        value=_notif.get("sound_file", ""), label="音效文件路径"
+                    )
+                    adv_volume = gr.Slider(
+                        0.0,
+                        1.0,
+                        value=float(_notif.get("volume", 0.7)),
+                        step=0.1,
+                        label="音量",
+                    )
+                    gr.Markdown("### 代理（注入环境变量，LLM/TTS 生效）")
+                    adv_proxy_enabled = gr.Checkbox(
+                        value=_proxy.get("enabled", False), label="启用代理"
+                    )
+                    adv_http = gr.Textbox(value=_proxy.get("http", ""), label="HTTP 代理")
+                    adv_https = gr.Textbox(value=_proxy.get("https", ""), label="HTTPS 代理")
+                    adv_no_proxy = gr.Textbox(
+                        value=",".join(_proxy.get("no_proxy", []) or []),
+                        label="NO_PROXY（逗号分隔）",
+                    )
+                    gr.Markdown("### 长期记忆")
+                    adv_mem_enabled = gr.Checkbox(
+                        value=_mem.get("enabled", True), label="启用长期记忆"
+                    )
+                    adv_mem_scope = gr.Dropdown(
+                        [("角色级", "character"), ("全局", "global")],
+                        value=_mem.get("scope", "character"),
+                        label="记忆作用域",
+                    )
+                    adv_mem_limit = gr.Slider(
+                        1, 10, value=int(_mem.get("recall_limit", 5)), step=1, label="召回条数"
+                    )
+                    adv_mem_llm = gr.Checkbox(
+                        value=_mem.get("extract_with_llm", False), label="摘要时用 LLM 提取记忆"
+                    )
+                    with gr.Row():
+                        adv_save_btn = gr.Button("保存高级设置", variant="primary")
+                        adv_clear_mem_btn = gr.Button("清空当前记忆")
+                    adv_status = gr.Markdown(visible=False)
 
                 with gr.Accordion("工具", open=False):
                     with gr.Row():
@@ -634,6 +1006,52 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                     search_results = gr.Markdown(visible=False)
                     stats_btn = gr.Button("查看统计")
                     stats_output = gr.Markdown(visible=False)
+                    gr.Markdown("#### 回收站")
+                    trash_refresh_btn = gr.Button("刷新回收站")
+                    trash_dd = gr.Dropdown(label="回收站会话", choices=[], value=None)
+                    with gr.Row():
+                        trash_restore_btn = gr.Button("恢复会话")
+                        trash_empty_btn = gr.Button("清空回收站")
+                    trash_status = gr.Markdown(visible=False)
+
+                with gr.Accordion("训练管理", open=False):
+                    tr_gsv_root = gr.Textbox(
+                        label="GPT-SoVITS 路径",
+                        value=_gt_cfg.get("gsv_root", ""),
+                        placeholder="C:/.../GPT-SoVITS-v2pro-20250604",
+                    )
+                    with gr.Row():
+                        tr_exp_dd = gr.Dropdown(
+                            label="训练实验",
+                            choices=[e["experiment"] for e in training_ops.scan_experiments()],
+                            value=None,
+                        )
+                        tr_refresh_btn = gr.Button("刷新")
+                    with gr.Row():
+                        tr_preview_btn = gr.Button("预览打包")
+                        tr_pack_btn = gr.Button("打包并清理")
+                    tr_cleanup_cb = gr.Checkbox(
+                        label="打包后清理中间素材",
+                        value=_gt_cfg.get("cleanup_after_pack", True),
+                    )
+                    tr_auto_detect = gr.Checkbox(
+                        label="自动检测训练完成（提醒）",
+                        value=_gt_cfg.get("auto_detect", False),
+                    )
+                    tr_auto_full = gr.Checkbox(
+                        label="全自动打包清理（auto_full）",
+                        value=_gt_cfg.get("auto_full", False),
+                    )
+                    tr_save_cfg_btn = gr.Button("保存训练配置")
+                    with gr.Row():
+                        tr_archive_dd = gr.Dropdown(
+                            label="归档 zip",
+                            choices=[a["path"] for a in training_ops.list_archives()],
+                            value=None,
+                        )
+                        tr_writeback_cb = gr.Checkbox(label="写回 GPT-SoVITS", value=False)
+                    tr_restore_btn = gr.Button("恢复归档")
+                    tr_status = gr.Markdown(visible=False)
 
                 gr.Markdown("### " + i18n.t("状态"))
                 status_text = gr.Markdown(_status_text())
@@ -704,6 +1122,64 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
         inputs=[session_radio],
         outputs=[chatbot, audio_player, banner, status_text],
     )
+    # R12：切换会话时刷新「本会话提供商」下拉
+    session_radio.change(
+        fn=current_session_provider_handler,
+        inputs=[session_radio],
+        outputs=[cfg_session_provider],
+    )
+
+    delete_session_btn.click(
+        fn=delete_session_handler,
+        outputs=[session_radio, chatbot, audio_player, status_text, delete_session_status],
+    )
+
+    trash_refresh_btn.click(
+        fn=refresh_trash_handler,
+        outputs=[trash_dd, trash_status],
+    )
+    trash_restore_btn.click(
+        fn=restore_trash_handler,
+        inputs=[trash_dd],
+        outputs=[trash_status, session_radio],
+    )
+    trash_empty_btn.click(
+        fn=empty_trash_handler,
+        outputs=[trash_status, trash_dd],
+    )
+
+    cfg_session_provider.change(
+        fn=set_session_provider_handler,
+        inputs=[cfg_session_provider],
+        outputs=[cfg_status],
+    )
+
+    adv_save_btn.click(
+        fn=save_advanced_settings_handler,
+        inputs=[
+            adv_device,
+            adv_llm_conc,
+            adv_tts_conc,
+            adv_idle,
+            adv_warn,
+            adv_notif_enabled,
+            adv_sound_file,
+            adv_volume,
+            adv_proxy_enabled,
+            adv_http,
+            adv_https,
+            adv_no_proxy,
+            adv_mem_enabled,
+            adv_mem_scope,
+            adv_mem_limit,
+            adv_mem_llm,
+        ],
+        outputs=[adv_status],
+    )
+    adv_clear_mem_btn.click(
+        fn=clear_memory_handler,
+        outputs=[adv_status],
+    )
 
     character_dropdown.change(
         fn=select_character_handler,
@@ -750,6 +1226,7 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
             editor_cot,
             editor_lorebook,
             editor_portrait,
+            editor_voice_dd,
         ],
         outputs=[editor_status, character_dropdown],
     )
@@ -807,10 +1284,38 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
     stats_btn.click(fn=stats_handler, outputs=[stats_output])
     fav_btn.click(fn=favorite_last_message_handler, outputs=[fav_status])
 
-    health_timer = gr.Timer(value=30)
-    health_timer.tick(fn=health_check_handler, outputs=[status_text])
+    tr_refresh_btn.click(
+        fn=refresh_training_choices,
+        outputs=[tr_exp_dd, tr_archive_dd, editor_voice_dd],
+    )
+    tr_preview_btn.click(
+        fn=preview_training_handler,
+        inputs=[tr_exp_dd],
+        outputs=[tr_status],
+    )
+    tr_pack_btn.click(
+        fn=pack_training_handler,
+        inputs=[tr_exp_dd],
+        outputs=[tr_status],
+    )
+    tr_restore_btn.click(
+        fn=restore_training_handler,
+        inputs=[tr_archive_dd, tr_writeback_cb],
+        outputs=[tr_status],
+    )
+    tr_save_cfg_btn.click(
+        fn=save_training_settings_handler,
+        inputs=[tr_gsv_root, tr_cleanup_cb, tr_auto_detect, tr_auto_full],
+        outputs=[tr_status],
+    )
 
-    return wizard_block, main_block, status_text
+    health_timer = gr.Timer(value=30)
+    health_timer.tick(fn=status_and_trash_handler, outputs=[status_text, trash_status])
+
+    training_timer = gr.Timer(value=60)
+    training_timer.tick(fn=auto_detect_handler, outputs=[tr_status])
+
+    return wizard_block, main_block, status_text, trash_status
 
 
 def parse_args() -> argparse.Namespace:
@@ -838,8 +1343,8 @@ def main() -> None:
         logger.error(f"数据迁移失败: {msg}")
 
     with gr.Blocks(title="LLM 角色扮演聊天", css=theme.to_css() + SIDEBAR_CSS) as demo:
-        _, _, status_text = build_wizard()
-        demo.load(fn=health_check_handler, outputs=status_text)
+        _, _, status_text, trash_status = build_wizard()
+        demo.load(fn=status_and_trash_handler, outputs=[status_text, trash_status])
 
     demo.queue(default_concurrency_limit=2)
 

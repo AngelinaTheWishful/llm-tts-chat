@@ -28,9 +28,10 @@ def test_sanitize_input_length_limit():
 
 
 def test_sanitize_input_html_escape():
+    """R1：存储/LLM 使用原始文本，不做 HTML 转义（XSS 由渲染层负责）。"""
     text, _ = sanitize_input("<script>alert(1)</script>")
-    assert "<script>" not in text
-    assert "&lt;script&gt;" in text
+    assert text == "<script>alert(1)</script>"
+    assert "&lt;" not in text
 
 
 def test_sanitize_input_sensitive_words():
@@ -66,7 +67,15 @@ class FakeTTS:
         return True
 
 
-def make_service(tmp_path):
+class FakeTTSOffline:
+    def synthesize_normalized(self, *args, **kwargs):
+        return b"WAVDATA"
+
+    def check_api(self):
+        return False
+
+
+def make_service(tmp_path, tts=None):
     char_dir = tmp_path / "chars" / "问候角色"
     char_dir.mkdir(parents=True)
     greeting_text = {"name": "问候角色", "greeting": "你好呀，最近学习顺利吗？"}
@@ -81,11 +90,20 @@ def make_service(tmp_path):
             "llm": {"active_provider": "x", "fallback_enabled": True},
             "llm_providers": {"x": {"base_url": "http://x", "api_key": "", "model": "m"}},
             "tts": {"api_base_url": "http://127.0.0.1:9880", "voice_language": "中文"},
+            "memory": {"enabled": True, "scope": "character", "recall_limit": 5},
         }
     )
     char_mgr = CharManager(tmp_path / "chars", config_manager=cm)
     conv_mgr = ConvManager(tmp_path / "convs")
-    ui = UiService(cm, char_mgr, conv_mgr, FakeTTS())
+    from modules.memory_store import MemoryStore
+
+    ui = UiService(
+        cm,
+        char_mgr,
+        conv_mgr,
+        tts or FakeTTS(),
+        memory_store=MemoryStore(tmp_path / "memories"),
+    )
     ui.tts_healthy = True
     return ui
 
@@ -110,9 +128,12 @@ def test_new_session_no_character_no_greeting(tmp_path):
 
 
 def test_last_audio_file_returns_none_when_missing(tmp_path):
-    """无音频时返回 None（而非空串），防止 Gradio 把空串解析为工作目录导致 PermissionError。"""
-    ui = make_service(tmp_path)
-    ui.tts_healthy = False  # 关闭 TTS，问候语无音频
+    """无音频时返回 None（而非空串），防止 Gradio 把空串解析为工作目录导致 PermissionError。
+
+    R7：TTS 离线（实时探测仍离线）时问候语无音频。
+    """
+    ui = make_service(tmp_path, tts=FakeTTSOffline())
+    ui.tts_healthy = False  # 缓存离线 + 实时探测离线 → 无音频
     ui.active_character = "问候角色"
     result = ui.new_session("问候角色")
     assert result["messages"][0].get("audio_file") is None

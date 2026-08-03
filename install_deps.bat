@@ -3,7 +3,7 @@ set "SCRIPT_DIR=%~dp0"
 set "VENV_DIR=%SCRIPT_DIR%venv"
 
 rem 依次查找可创建 venv 的 Python（runtime 的 3.9 无 venv 模块，故补充系统 Python）
-set "PY_CANDIDATES=C:/GPT-SoVITS/GPT-SoVITS-v2pro-20250604\runtime\python.exe C:\Program Files\Python310\python.exe C:\Python314\python.exe"
+set "PY_CANDIDATES=D:\GPT-SoVITS\GPT-SoVITS-v2pro-20250604\runtime\python.exe C:\Program Files\Python310\python.exe C:\Python314\python.exe"
 
 echo [INFO] 查找可用的 Python...
 set "PYTHON="

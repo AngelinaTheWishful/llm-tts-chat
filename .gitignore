@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -12,11 +12,15 @@ characters/*/portrait_thumb.png
 characters/*/ref.wav
 characters/*/greeting.wav
 characters/*/voice_sample.wav
+# 示例角色「暴行」的头像随包入库（用户确认作为内置示例角色）
+!characters/暴行/portrait.png
+!characters/暴行/portrait_thumb.png
 conversations/*
 trash/*
 temp_audio/*
 exports/*
 logs/*
+memories/*
 
 # 开发范围警示文件（必须提交，保留占位）
 !**/开发范围警示.md
@@ -26,11 +30,15 @@ config.json
 !config.example.json
 theme_config.json
 
+# 训练归档数据（不提交，仅提交警示文件占位）
+gsv_training/archives/*
+gsv_training/restored/*
+
+# 文档归档副本（运行日志不提交，文档/机密保留警示文件）
+dev_archive/logs/*
+!dev_archive/logs/开发范围警示.md
+
+
 # 系统
 .DS_Store
 Thumbs.db
-
-# 机密文档（不发布）
-项目开发需求书(机密禁止上传).md
-开发工作流程(机密禁止上传).md
-【2026-07-30】开发工作记录【RDv1.0】.md

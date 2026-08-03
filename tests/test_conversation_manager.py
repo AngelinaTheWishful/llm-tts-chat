@@ -229,3 +229,141 @@ def test_session_and_global_stats(tmp_path):
     assert global_stats["total_msgs"] == 3
     assert global_stats["total_favorites"] == 1
     assert global_stats["most_active_session"]["session_id"] == s1
+
+
+# ---------- R5：msg_id 收藏 + 摘要压缩孤儿清理 ----------
+
+
+def test_add_message_has_msg_id(tmp_path):
+    mgr = ConvManager(tmp_path)
+    sid = mgr.create_session()
+    msg = mgr.add_message(sid, "user", "你好")
+    assert msg.get("msg_id")
+    assert len(msg["msg_id"]) == 12
+
+
+def test_favorite_survives_summarize_by_msg_id(tmp_path):
+    mgr = ConvManager(tmp_path, max_history_rounds=1, summarize_trigger_rounds=2)
+    sid = mgr.create_session()
+    mgr.add_message(sid, "user", "q0")
+    mgr.add_message(sid, "assistant", "a0")
+    mgr.add_message(sid, "user", "q1")
+    mgr.add_message(sid, "assistant", "a1")
+
+    # 收藏最后一条（index 3）与新一条（index 2）
+    assert mgr.add_favorite(sid, 3) is True
+
+    # 摘要压缩：保留最近 1 轮（index 2,3），index 0,1 被裁剪
+    mgr.maybe_summarize(sid, summarize_fn=lambda h: "摘要")
+    messages = mgr.get_messages(sid)
+    assert len(messages) == 2
+    assert messages[0]["content"] == "q1"
+    assert messages[1]["content"] == "a1"
+
+    # 收藏的 a1 仍在 → msg_id 有效，收藏保留
+    assert mgr.is_favorite(sid, 1) is True
+    favs = mgr.list_favorites(sid)
+    assert len(favs) == 1
+    assert favs[0]["content"] == "a1"
+
+    # 再次压缩后若被裁掉，收藏被清理
+    mgr.add_message(sid, "user", "q2")
+    mgr.add_message(sid, "assistant", "a2")
+    mgr.add_favorite(sid, 3)
+    mgr.maybe_summarize(sid, summarize_fn=lambda h: "摘要2")
+    # 现在消息只剩 q2/a2，旧收藏 a1 已不存在 → 孤儿被清理
+    remaining = mgr.list_favorites(sid)
+    assert len(remaining) == 1
+    assert remaining[0]["content"] == "a2"
+
+
+# ---------- R4：remove_last_message 回滚 ----------
+
+
+def test_remove_last_message_rollback(tmp_path):
+    mgr = ConvManager(tmp_path)
+    sid = mgr.create_session()
+    mgr.add_message(sid, "user", "你好")
+    mgr.add_message(sid, "assistant", "回复", audio_data=b"WAV")
+
+    removed = mgr.remove_last_message(sid, role="assistant")
+    assert removed is not None
+    assert removed["content"] == "回复"
+    messages = mgr.get_messages(sid)
+    assert len(messages) == 1
+    assert not (tmp_path / sid / "audio" / "msg_1.wav").exists()
+
+    removed2 = mgr.remove_last_message(sid, role="user")
+    assert removed2["content"] == "你好"
+    assert mgr.get_messages(sid) == []
+
+
+def test_remove_last_message_missing_session(tmp_path):
+    mgr = ConvManager(tmp_path)
+    assert mgr.remove_last_message("nonexistent") is None
+
+
+# ---------- R3：会话回收站 ----------
+
+
+def _conv_mgr(tmp_path):
+    """回收站默认取 convs_dir.parent/trash/sessions，用独立子目录保证测试隔离。"""
+    return ConvManager(tmp_path / "convs")
+
+
+def test_delete_moves_to_trash(tmp_path):
+    mgr = _conv_mgr(tmp_path)
+    sid = mgr.create_session("回收测试")
+    mgr.add_message(sid, "user", "hi")
+
+    assert mgr.delete_session(sid) is True
+    assert not mgr.session_exists(sid)
+    trash = mgr.list_trash()
+    assert len(trash) == 1
+    assert trash[0]["original_id"] == sid
+    assert trash[0]["deleted_at"]
+
+
+def test_restore_from_trash(tmp_path):
+    mgr = _conv_mgr(tmp_path)
+    sid = mgr.create_session("恢复测试")
+    mgr.delete_session(sid)
+
+    trash = mgr.list_trash()
+    restored_sid = mgr.restore_from_trash(trash[0]["id"])
+    assert restored_sid == sid
+    assert mgr.session_exists(sid)
+    assert mgr.list_trash() == []
+
+
+def test_empty_trash(tmp_path):
+    mgr = _conv_mgr(tmp_path)
+    sid = mgr.create_session()
+    mgr.delete_session(sid)
+    assert len(mgr.list_trash()) == 1
+    assert mgr.empty_trash() == 1
+    assert mgr.list_trash() == []
+
+
+def test_delete_permanent(tmp_path):
+    mgr = _conv_mgr(tmp_path)
+    sid = mgr.create_session()
+    mgr.delete_session(sid, permanent=True)
+    assert not mgr.session_exists(sid)
+    assert mgr.list_trash() == []
+
+
+# ---------- R8：会话元数据缓存 ----------
+
+
+def test_session_meta_cached(tmp_path):
+    mgr = ConvManager(tmp_path)
+    sid = mgr.create_session("缓存会话")
+    # 第一次 list_sessions 后元数据进入缓存
+    mgr.list_sessions()
+    assert sid in mgr._sessions_meta
+    meta = mgr._sessions_meta[sid]
+    assert meta["name"] == "缓存会话"
+    # 重命名后缓存失效重建
+    mgr.rename_session(sid, "新名字")
+    assert mgr.list_sessions()[0]["name"] == "新名字"

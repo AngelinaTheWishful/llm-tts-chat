@@ -41,6 +41,12 @@ DEFAULT_CONFIG = {
         "language": "zh_CN",
         "sidebar_collapsed": False,
     },
+    "memory": {
+        "enabled": True,
+        "scope": "character",
+        "recall_limit": 5,
+        "extract_with_llm": False,
+    },
     "gsv_root": "",
     "external_characters": [],
     "trash": {
@@ -75,6 +81,14 @@ DEFAULT_CONFIG = {
         "https": "",
         "no_proxy": ["localhost", "127.0.0.1"],
     },
+    "gsv_training": {
+        "gsv_root": "",
+        "archive_dir": "",
+        "restore_dir": "",
+        "cleanup_after_pack": True,
+        "auto_detect": False,
+        "auto_full": False,
+    },
 }
 
 
@@ -90,6 +104,33 @@ def decrypt_api_key(encoded: str) -> str:
         return decoded
     except Exception:
         return encoded
+
+
+PROXY_ENV_VARS = ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"]
+
+
+def apply_proxy_env(proxy_config: dict | None = None) -> None:
+    """根据 config['proxy'] 注入/清除代理环境变量（R10）。
+
+    requests 与 httpx(openai) 均默认从环境变量读取代理，注入即真实接线。
+    - enabled=False 或未配置时清除全部代理环境变量
+    """
+    proxy = proxy_config or {}
+    if proxy.get("enabled") and (proxy.get("http") or proxy.get("https")):
+        os.environ["HTTP_PROXY"] = proxy.get("http", "") or ""
+        os.environ["http_proxy"] = proxy.get("http", "") or ""
+        os.environ["HTTPS_PROXY"] = proxy.get("https", "") or ""
+        os.environ["https_proxy"] = proxy.get("https", "") or ""
+        no_proxy = ",".join(p for p in (proxy.get("no_proxy") or []) if p)
+        if no_proxy:
+            os.environ["NO_PROXY"] = no_proxy
+            os.environ["no_proxy"] = no_proxy
+        else:
+            os.environ.pop("NO_PROXY", None)
+            os.environ.pop("no_proxy", None)
+    else:
+        for var in PROXY_ENV_VARS + ["NO_PROXY", "no_proxy"]:
+            os.environ.pop(var, None)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

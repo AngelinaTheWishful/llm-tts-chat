@@ -11,6 +11,7 @@ def build_system_prompt(
     lore_entries: list[str] | None = None,
     text_lang: str | None = None,
     protection_mode: str = "A",
+    memory_entries: list[str] | None = None,
 ) -> str:
     """按结构化分段构建 system prompt。"""
     sc = character.get("system_prompt_structured", {})
@@ -44,6 +45,10 @@ def build_system_prompt(
         lore_text = "以下是一些你需要知道的相关信息：\n" + "\n".join(lore_entries)
         parts.append(lore_text)
 
+    if memory_entries:
+        header = "[记忆]（你记住的与用户相关的长期信息，自然运用在对话中）：\n"
+        parts.append(header + "\n".join(memory_entries))
+
     if text_lang:
         parts.append(f"[输出要求] 请用{text_lang}回复。")
 
@@ -75,6 +80,7 @@ def build_messages(
     user_input: str,
     text_lang: str,
     protection_mode: str = "A",
+    memory_entries: list[str] | None = None,
 ) -> list[dict]:
     """构造完整 LLM 消息列表。"""
     system_prompt = build_system_prompt(
@@ -82,6 +88,7 @@ def build_messages(
         lore_entries=lore_entries,
         text_lang=text_lang,
         protection_mode=protection_mode,
+        memory_entries=memory_entries,
     )
 
     messages: list[dict] = [{"role": "system", "content": system_prompt}]

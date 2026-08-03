@@ -1,4 +1,4 @@
-﻿{
+{
   "data_version": "1.0",
   "llm": {
     "active_provider": "deepseek",
@@ -33,6 +33,12 @@
     "language": "zh_CN",
     "sidebar_collapsed": false
   },
+  "memory": {
+    "enabled": true,
+    "scope": "character",
+    "recall_limit": 5,
+    "extract_with_llm": false
+  },
   "gsv_root": "C:/GPT-SoVITS/GPT-SoVITS-v2pro-20250604",
   "external_characters": [],
   "trash": {
@@ -66,5 +72,13 @@
     "http": "",
     "https": "",
     "no_proxy": ["localhost", "127.0.0.1"]
+  },
+  "gsv_training": {
+    "gsv_root": "C:/GPT-SoVITS/GPT-SoVITS-v2pro-20250604",
+    "archive_dir": "",
+    "restore_dir": "",
+    "cleanup_after_pack": true,
+    "auto_detect": false,
+    "auto_full": false
   }
 }

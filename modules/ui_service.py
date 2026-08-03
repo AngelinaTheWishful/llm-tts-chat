@@ -3,13 +3,18 @@
 将 Gradio 组件事件与 Core 层（LLM/TTS/CharMgr/ConvMgr）解耦。
 """
 
-import html as html_lib
+from pathlib import Path
 
 from modules.base_manager import BaseManager
 from modules.character_manager import CharManager
 from modules.conversation_manager import ConvManager
 from modules.llm_client import LLMClient, call_llm_with_fallback
 from modules.lorebook_matcher import LorebookMatcher
+from modules.memory_store import (
+    MemoryStore,
+    extract_rule_memories,
+    split_summary_and_memories,
+)
 from modules.prompt_builder import build_messages
 from modules.tts_client import TTSClient
 
@@ -17,15 +22,17 @@ from modules.tts_client import TTSClient
 def sanitize_input(
     text: str, max_length: int = 2000, sensitive_words: list[str] | None = None
 ) -> tuple[str, str]:
-    """校验和过滤用户输入（章节五十六）。返回 (处理后的文本, 警告信息)。"""
+    """校验和过滤用户输入（章节五十六）。
+
+    返回 (处理后的文本, 警告信息)。存储与 LLM 上下文使用原始文本（R1），
+    XSS 防护由渲染层（Gradio Chatbot 消毒）负责，不做 HTML 转义。
+    """
     text = (text or "").strip()
     if not text:
         return "", "请输入消息"
 
     if len(text) > max_length:
         return "", f"消息过长（{len(text)}/{max_length}），请分段发送"
-
-    text = html_lib.escape(text)
 
     for word in sensitive_words or []:
         if word:
@@ -38,7 +45,12 @@ class UiService(BaseManager):
     """UI 事件编排层。"""
 
     def __init__(
-        self, config_mgr, char_mgr: CharManager, conv_mgr: ConvManager, tts_client: TTSClient
+        self,
+        config_mgr,
+        char_mgr: CharManager,
+        conv_mgr: ConvManager,
+        tts_client: TTSClient,
+        memory_store: MemoryStore | None = None,
     ):
         super().__init__("ui")
         self.config_mgr = config_mgr
@@ -46,10 +58,15 @@ class UiService(BaseManager):
         self.conv_mgr = conv_mgr
         self.tts_client = tts_client
         self.lore_matcher = LorebookMatcher()
+        self.memory_store = memory_store or MemoryStore()
         self.active_session: str | None = None
         self.active_character: str | None = None
         self.last_audio_path: str = ""
         self.tts_healthy = False
+        # R12: 按会话覆盖的 LLM 提供商（session_id -> provider 名）
+        self.session_providers: dict[str, str] = {}
+        # 章节八十四: LLM 摘要阶段顺带提取的记忆（extract_with_llm）
+        self._pending_memories: list[str] = []
 
     # ---------- 对话流程（章节八） ----------
 
@@ -77,8 +94,29 @@ class UiService(BaseManager):
         # 1. 保存用户消息
         self.conv_mgr.add_message(self.active_session, "user", text)
 
+        # 1.5 记忆提取（章节八十四，规则提取）
+        memory_cfg = config.get("memory", {})
+        if memory_cfg.get("enabled", True):
+            mem_scope, mem_key = self._memory_scope_key()
+            new_memories = extract_rule_memories(text)
+            if new_memories:
+                self.memory_store.add_memories(
+                    new_memories,
+                    scope=mem_scope,
+                    key=mem_key,
+                    source_session=self.active_session,
+                )
+
         # 2. 构建上下文
         summary, recent = self.conv_mgr.build_llm_context(self.active_session)
+
+        # 2.5 记忆召回（章节八十四）
+        memory_entries = []
+        if memory_cfg.get("enabled", True):
+            mem_scope, mem_key = self._memory_scope_key()
+            memory_entries = self.memory_store.recall(
+                text, scope=mem_scope, key=mem_key, limit=memory_cfg.get("recall_limit", 5)
+            )
 
         # 3. Lorebook 匹配
         lore_entries = self._match_lorebook(text)
@@ -94,11 +132,13 @@ class UiService(BaseManager):
             text,
             text_lang,
             protection_mode=protection_mode,
+            memory_entries=memory_entries,
         )
 
-        # 5. LLM 调用（含多提供商故障转移）
+        # 5. LLM 调用（多提供商故障转移 + 会话级提供商覆盖 R12）
         providers = config.get("llm_providers", {})
         llm_cfg = config.get("llm", {})
+        session_provider = self.get_session_provider(self.active_session)
         try:
             reply, provider_name = call_llm_with_fallback(
                 providers,
@@ -106,21 +146,34 @@ class UiService(BaseManager):
                 llm_cfg.get("fallback_enabled", True),
                 messages[0]["content"],
                 messages[1:],
+                session_provider=session_provider,
             )
         except Exception as e:
-            self.log("error", f"LLM 调用失败: {e}")
+            # R4：回滚刚保存的用户消息，避免重发重复
+            self.conv_mgr.remove_last_message(self.active_session, role="user")
+            self.log("error", f"LLM 调用失败（已回滚用户消息）: {e}")
             return {"error": f"LLM 调用失败: {e}"}
 
-        # 6. 检查上下文长度 → 摘要压缩
+        # 6. 检查上下文长度 → 摘要压缩（extract_with_llm 时顺带提取记忆）
         self.conv_mgr.maybe_summarize(
             self.active_session, summarize_fn=self._summarize_with_provider
         )
+        if memory_cfg.get("enabled", True) and self._pending_memories:
+            mem_scope, mem_key = self._memory_scope_key()
+            self.memory_store.add_memories(
+                self._pending_memories,
+                scope=mem_scope,
+                key=mem_key,
+                source_session=self.active_session,
+            )
+            self._pending_memories = []
 
-        # 7. TTS 合成（失败不阻断文字显示）
+        # 7. TTS 合成（R7：离线时实时探测，失败不阻断文字显示）
         audio_data = None
+        tts_notice = ""
         norm = config.get("audio_normalization", {})
-        try:
-            if self.tts_healthy:
+        if self._ensure_tts_ready():
+            try:
                 audio_data = self.tts_client.synthesize_normalized(
                     reply,
                     voice_lang,
@@ -128,8 +181,11 @@ class UiService(BaseManager):
                     target_db=norm.get("target_dB", -3.0),
                     global_volume=norm.get("global_volume", 1.0),
                 )
-        except Exception as e:
-            self.log("warning", f"TTS 合成失败（不影响文字）: {e}")
+            except Exception as e:
+                self.log("warning", f"TTS 合成失败（不影响文字）: {e}")
+                tts_notice = "TTS 合成失败，本次回复无语音"
+        else:
+            tts_notice = "TTS API 离线，本次回复无语音"
 
         # 8. 保存 AI 回复
         self.conv_mgr.add_message(self.active_session, "assistant", reply, audio_data)
@@ -143,6 +199,7 @@ class UiService(BaseManager):
             "provider": provider_name,
             "session_id": self.active_session,
             "session_name": self._session_name(self.active_session),
+            "tts_notice": tts_notice,
         }
 
     def _summarize_with_provider(self, history: list[dict]) -> str:
@@ -150,7 +207,37 @@ class UiService(BaseManager):
         llm_cfg = self.config_mgr.get("llm", {})
         provider_config = self._pick_provider_config(providers, llm_cfg.get("active_provider", ""))
         client = LLMClient(provider_config)
+
+        # 章节八十四：extract_with_llm 时摘要调用顺带提取记忆（不额外调用）
+        memory_cfg = self.config_mgr.get("memory", {})
+        if memory_cfg.get("extract_with_llm", False):
+            combined = client.chat(
+                "你是对话摘要与记忆提取助手。",
+                [
+                    *history,
+                    {
+                        "role": "user",
+                        "content": (
+                            "请输出：1) 对话摘要（简洁）；"
+                            "2) 从用户陈述中提取的用户长期偏好/事实记忆"
+                            "（每条以「记忆：」开头，每行一条，无记忆则只输出摘要）。\n"
+                            "格式：\n[摘要]\n<摘要内容>\n[记忆]\n记忆：<内容>\n记忆：<内容>"
+                        ),
+                    },
+                ],
+            )
+            summary, memories = split_summary_and_memories(combined)
+            self._pending_memories = [m for m in memories if m]
+            return summary
+
         return client.summarize(history)
+
+    def _memory_scope_key(self) -> tuple[str, str]:
+        """返回记忆库作用域与键（章节八十四）：character/<角色名> 或 global/global。"""
+        scope = self.config_mgr.get("memory", {}).get("scope", "character")
+        if scope == "global":
+            return "global", "global"
+        return "character", self.active_character or "default"
 
     @staticmethod
     def _pick_provider_config(providers: dict, active: str) -> dict:
@@ -184,7 +271,7 @@ class UiService(BaseManager):
 
     def _synthesize_speech(self, text: str, voice_lang: str) -> bytes | None:
         """合成语音（失败返回 None，不影响文字流程）。"""
-        if not self.tts_healthy:
+        if not self._ensure_tts_ready():
             return None
         norm = self.config_mgr.get("audio_normalization", {})
         try:
@@ -198,6 +285,13 @@ class UiService(BaseManager):
         except Exception as e:
             self.log("warning", f"TTS 合成失败（不影响文字）: {e}")
             return None
+
+    def _ensure_tts_ready(self) -> bool:
+        """R7：TTS 状态缓存增强——缓存为离线时实时探测一次，避免静默跳过语音。"""
+        if self.tts_healthy:
+            return True
+        self.tts_healthy = self.tts_client.check_api()
+        return self.tts_healthy
 
     def new_session(self, character_name: str | None = None) -> dict:
         name = character_name or self.active_character or "新会话"
@@ -238,12 +332,51 @@ class UiService(BaseManager):
         self.active_session = session_id
         messages = self.conv_mgr.get_messages(session_id)
         self.last_audio_path = self._last_audio_file(session_id)
+        # R12：加载该会话的提供商覆盖
+        self._load_session_provider(session_id)
         return {
             "session_id": session_id,
             "session_name": self._session_name(session_id),
             "messages": messages,
             "audio_path": self.last_audio_path,
         }
+
+    # ---------- 会话级 LLM 提供商（R12） ----------
+
+    def _provider_file(self, session_id: str) -> Path:
+        return Path(self.conv_mgr.dir) / session_id / "provider.txt"
+
+    def _load_session_provider(self, session_id: str) -> str:
+        """从会话目录 provider.txt 加载提供商覆盖。"""
+        p = self._provider_file(session_id)
+        provider = ""
+        if p.exists():
+            provider = p.read_text(encoding="utf-8").strip()
+        self.session_providers[session_id] = provider
+        return provider
+
+    def get_session_provider(self, session_id: str | None) -> str | None:
+        """返回会话级提供商（无覆盖时返回 None → 跟随全局活动提供商）。"""
+        if not session_id:
+            return None
+        provider = self.session_providers.get(session_id)
+        if provider is None:
+            provider = self._load_session_provider(session_id)
+        return provider or None
+
+    def set_session_provider(self, session_id: str | None, provider: str) -> bool:
+        """设置会话级提供商（空值 = 跟随全局），持久化到 provider.txt。"""
+        if not session_id or not self.conv_mgr.session_exists(session_id):
+            return False
+        provider = (provider or "").strip()
+        self.session_providers[session_id] = provider
+        p = self._provider_file(session_id)
+        if provider:
+            p.write_text(provider, encoding="utf-8")
+        elif p.exists():
+            p.unlink(missing_ok=True)
+        self.log("info", f"会话级提供商已设置: {session_id} -> {provider or '跟随全局'}")
+        return True
 
     def delete_session(self, session_id: str) -> dict:
         if session_id == self.active_session:
