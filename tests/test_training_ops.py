@@ -191,10 +191,13 @@ def test_has_archive_and_list_archives(tmp_path):
 
 def test_detect_completed(tmp_path):
     ops, _ = _make_ops(tmp_path)
-    # 将全量 ckpt 的 mtime 改旧
-    g = Path(tmp_path) / "gsv" / "logs" / "suomiKP31_EXP_01" / "logs_s2_v2Pro" / "G_1.pth"
+    # 将全部 s1/s2 结果文件 mtime 改旧（detect_completed 取 max(mtime)，
+    # 只改一个文件会让 newest 取到新建文件、与 now 竞态导致 flaky）
+    exp = Path(tmp_path) / "gsv" / "logs" / "suomiKP31_EXP_01"
     old = 1000.0
-    os.utime(g, (old, old))
+    for p in exp.rglob("*"):
+        if p.is_file() and p.suffix in (".pth", ".ckpt"):
+            os.utime(p, (old, old))
     completed = ops.detect_completed(idle_minutes=0)
     assert any(c["experiment"] == "suomiKP31_EXP_01" for c in completed)
 
