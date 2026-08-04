@@ -85,6 +85,7 @@ body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: no
         max-height: 40vh;
     }}
     #sidebar-resizer {{ display: none !important; }}
+    #sidebar-resizer-wrap {{ display: none !important; }}
 }}
 """
 
@@ -845,8 +846,8 @@ def build_config(
         "base_url": base_url,
         "api_key": encrypt_api_key(api_key.strip()) if api_key else "",
         "model": model,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
+        "max_tokens": int(max_tokens),
+        "temperature": float(temperature),
         "text_language": text_language,
         "priority": 1,
     }
@@ -1533,7 +1534,11 @@ def main() -> None:
         _, _, status_text, trash_status = build_wizard()
         demo.load(fn=status_and_trash_handler, outputs=[status_text, trash_status])
 
-    demo.queue(default_concurrency_limit=2)
+    # 并发数接线（高级设置 R10 保存的值真正生效）：LLM 并发 → queue 默认并发；TTS 由
+    # TTSClient 内部 TTSSerializer 全局串行化，天然并发=1
+    _perf_cfg = config_mgr.get("performance", {})
+    _llm_conc = int(_perf_cfg.get("max_llm_concurrency", 2) or 2)
+    demo.queue(default_concurrency_limit=max(1, _llm_conc))
 
     port = args.port or find_available_port(config_mgr.get("app", {}).get("port", 7861))
     logger.info(f"启动端口: {port}")

@@ -2,6 +2,14 @@
 
 本文件记录所有已发布版本的应用变更。
 
+## [v1.1.7] - 2026-08-04
+
+### 修复
+
+- **并发数配置未生效**：`demo.queue(default_concurrency_limit=2)` 硬编码，高级设置 `performance.max_llm_concurrency` 保存后从未接线；现队列并发改用该配置（R10 真实生效；TTS 由 TTSSerializer 全局串行化，天然并发=1）
+- **移动端分隔条残留占位**：移动端媒体查询只隐藏 `#sidebar-resizer`，其容器 `#sidebar-resizer-wrap` 仍占 5px；补隐藏
+- **配置向导 max_tokens/temperature 存 float**：`build_config` 统一 `int(max_tokens)` / `float(temperature)`（与侧栏保存一致）
+
 ## [v1.1.6] - 2026-08-04
 
 ### 修复
