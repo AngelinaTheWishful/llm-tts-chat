@@ -40,6 +40,7 @@ SIDEBAR_CSS = f"""
 #sidebar-col {{
     height: {CHAT_HEIGHT}px;
     overflow-y: auto;
+    overflow-x: hidden;
     padding-right: 6px;
     flex: 0 0 {_SIDEBAR_W}px;
     width: {_SIDEBAR_W}px;
@@ -48,6 +49,8 @@ SIDEBAR_CSS = f"""
     /* Gradio 内联 flex-grow:1 会覆盖 flex 简写导致侧栏无限变宽挤占聊天区，强制不增长 */
     flex-grow: 0 !important;
     flex-shrink: 0 !important;
+    /* Gradio 默认 flex-wrap:wrap 会让超高的折叠栏内容横向换列（表格跑到右侧），强制单列 */
+    flex-wrap: nowrap !important;
 }}
 #sidebar-col .gradio-accordion {{ margin-bottom: 6px; }}
 #sidebar-resizer {{
