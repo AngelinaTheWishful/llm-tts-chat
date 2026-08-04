@@ -26,6 +26,24 @@ PORTRAIT_SIZE = (512, 512)
 THUMB_SIZE = (64, 64)
 DEFAULT_SANITIZE = "[^\\w\\u4e00-\\u9fff-]+"
 
+# 默认权重扫描目录（与 tts_client.GSV_SCAN_DIRS_* 保持一致，供无音色预设角色回退）
+_GSV_SCAN_DIRS_GPT = [
+    "GPT_weights",
+    "GPT_weights_v2",
+    "GPT_weights_v2Pro",
+    "GPT_weights_v2ProPlus",
+    "GPT_weights_v3",
+    "GPT_weights_v4",
+]
+_GSV_SCAN_DIRS_SOVITS = [
+    "SoVITS_weights",
+    "SoVITS_weights_v2",
+    "SoVITS_weights_v2Pro",
+    "SoVITS_weights_v2ProPlus",
+    "SoVITS_weights_v3",
+    "SoVITS_weights_v4",
+]
+
 
 class CharManager(BaseManager):
     """角色管理。"""
@@ -311,20 +329,92 @@ class CharManager(BaseManager):
 
         - 模型路径若为相对路径，尝试按 gsv_root 解析
         - 参考音频相对路径按角色目录解析
+        - 角色无预设（或预设缺参考音频）时，回退到训练实验的默认权重与参考音频，
+          保证 TTS 可用（v1.1.4）
         """
         rs = char.get("recommended_settings", {})
-        if rs.get("gpt_model"):
-            tts_client.set_gpt_weights(self._resolve_preset_path(rs["gpt_model"], gsv_root))
-        if rs.get("sovits_model"):
-            tts_client.set_sovits_weights(self._resolve_preset_path(rs["sovits_model"], gsv_root))
-        if rs.get("ref_audio") and rs.get("ref_text") and rs.get("ref_language"):
-            ref_audio = rs["ref_audio"]
+        gpt = rs.get("gpt_model", "")
+        sovits = rs.get("sovits_model", "")
+
+        resolved_gpt = ""
+        resolved_sovits = ""
+        if gpt:
+            resolved_gpt = self._resolve_preset_path(gpt, gsv_root)
+            tts_client.set_gpt_weights(resolved_gpt)
+        else:
+            resolved_gpt = self._first_scan_model(gsv_root, _GSV_SCAN_DIRS_GPT, "*.ckpt")
+            if resolved_gpt:
+                tts_client.set_gpt_weights(resolved_gpt)
+        if sovits:
+            resolved_sovits = self._resolve_preset_path(sovits, gsv_root)
+            tts_client.set_sovits_weights(resolved_sovits)
+        else:
+            resolved_sovits = self._first_scan_model(gsv_root, _GSV_SCAN_DIRS_SOVITS, "*.pth")
+            if resolved_sovits:
+                tts_client.set_sovits_weights(resolved_sovits)
+
+        ref_audio = rs.get("ref_audio", "")
+        ref_text = rs.get("ref_text", "")
+        ref_lang = rs.get("ref_language", "")
+        if not (ref_audio and ref_text):
+            # 从训练实验日志推导参考音频（5-wav32k 首条 + 2-name2text.txt 文本）
+            exp = self._experiment_name(resolved_gpt or resolved_sovits)
+            ref_audio, ref_text = self._exp_ref_audio(gsv_root, exp)
+            if ref_text and any("\u3040" <= ch <= "\u30ff" for ch in ref_text):
+                ref_lang = "ja"
+        if ref_audio and ref_text:
             if not Path(ref_audio).is_absolute():
                 char_dir = Path(char.get("_dir", ""))
                 resolved = char_dir / ref_audio
                 if resolved.exists():
                     ref_audio = str(resolved)
-            tts_client.set_refer_audio(ref_audio, rs["ref_text"], rs["ref_language"])
+            tts_client.set_refer_audio(ref_audio, ref_text, ref_lang or "zh")
+
+    @staticmethod
+    def _first_scan_model(gsv_root: str, scan_dirs: list[str], pattern: str) -> str:
+        """扫描 gsv_root 下权重目录，返回第一个匹配文件。"""
+        root = Path(gsv_root)
+        for d in scan_dirs:
+            target = root / d
+            if target.exists():
+                matches = sorted(target.glob(pattern))
+                if matches:
+                    return str(matches[0])
+        return ""
+
+    @staticmethod
+    def _experiment_name(weights_path: str) -> str:
+        """从权重文件名解析实验名（如 suomiKP31_EXP_01-e10.ckpt → suomiKP31_EXP_01）。"""
+        stem = Path(weights_path).stem
+        m = re.match(r"(.+?)-e\d+", stem)
+        return m.group(1) if m else stem
+
+    @staticmethod
+    def _exp_ref_audio(gsv_root: str, exp_name: str) -> tuple[str, str]:
+        """从训练实验日志推导参考音频：5-wav32k 首条 wav + 2-name2text.txt 对应文本。"""
+        if not gsv_root or not exp_name:
+            return "", ""
+        logs = Path(gsv_root) / "logs" / exp_name
+        wav_dir = logs / "5-wav32k"
+        if not wav_dir.exists():
+            return "", ""
+        wavs = sorted(wav_dir.glob("*.wav"))
+        if not wavs:
+            return "", ""
+        wav = str(wavs[0])
+        text = ""
+        name2text = logs / "2-name2text.txt"
+        if name2text.exists():
+            try:
+                for line in name2text.read_text(encoding="utf-8").splitlines():
+                    if line.startswith(wavs[0].name + "\t"):
+                        parts = line.split("\t")
+                        if len(parts) >= 4 and parts[3].strip():
+                            text = parts[3].strip()
+                        break
+            except Exception:
+                text = ""
+        return wav, text
 
     @staticmethod
     def _resolve_preset_path(path: str, gsv_root: str) -> str:

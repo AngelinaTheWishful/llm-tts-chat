@@ -464,17 +464,18 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
             check("B15 训练面板刷新（空环境）", False, str(e))
 
     # 章节八十五：折叠修复验证
-    # gr.State 组件不暴露为 API 参数（predict 返回空），改验：修复后的 JS 已注入前端 + 端点存在
+    # 折叠改用隐藏 gr.Number(sidebar-collapse-state) + js 切换 DOM（避免 gr.State 触发 Gradio
+    # "Too many arguments" 导致事件失效），验证隐藏组件与修复 JS 已注入前端 + 端点存在
     if has("persist_sidebar_state"):
         try:
             html = requests.get(base, timeout=10).text
-            has_fix_js = "return new_state" in html
+            has_fix_js = "sidebar-collapse-state" in html and "return next" in html
             has_toggle = "sidebar-col" in html
-            check("B17 侧栏折叠修复（JS return 值）", has_fix_js and has_toggle)
+            check("B17 侧栏折叠修复（隐藏组件 + JS 切换）", has_fix_js and has_toggle)
         except Exception as e:
-            check("B17 侧栏折叠修复（JS return 值）", False, str(e))
+            check("B17 侧栏折叠修复（隐藏组件 + JS 切换）", False, str(e))
     else:
-        check("B17 侧栏折叠修复（JS return 值）", False, "端点缺失")
+        check("B17 侧栏折叠修复（隐藏组件 + JS 切换）", False, "端点缺失")
 
     if has("save_sidebar_width"):
         try:

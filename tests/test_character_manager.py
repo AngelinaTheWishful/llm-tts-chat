@@ -187,3 +187,50 @@ def test_apply_preset(tmp_path):
     ref_call = next(c for c in calls if c[0] == "ref")
     assert ref_call[1].endswith("ref.wav")  # 相对路径解析为绝对路径
     assert ref_call[2] == "测试"
+
+
+def test_apply_preset_defaults_weights_and_ref_audio(tmp_path):
+    """角色无音色预设时回退默认权重与训练日志参考音频（v1.1.4）。"""
+    gsv = tmp_path / "gsv"
+    (gsv / "GPT_weights_v2Pro").mkdir(parents=True)
+    (gsv / "GPT_weights_v2Pro" / "EXP01-e10.ckpt").write_bytes(b"")
+    (gsv / "SoVITS_weights_v2Pro").mkdir(parents=True)
+    (gsv / "SoVITS_weights_v2Pro" / "EXP01_e8_s248.pth").write_bytes(b"")
+    wav_dir = gsv / "logs" / "EXP01" / "5-wav32k"
+    wav_dir.mkdir(parents=True)
+    wav = wav_dir / "sample1.wav"
+    wav.write_bytes(b"WAV")
+    (gsv / "logs" / "EXP01" / "2-name2text.txt").write_text(
+        "sample1.wav\tph\tNone\t日本語のテキストです\n", encoding="utf-8"
+    )
+
+    char_dir = make_char_dir(tmp_path, "无预设角色")
+    char = {**SAMPLE_CHAR, "name": "无预设角色", "recommended_settings": {}}
+    assert char_dir.exists()
+    mgr = CharManager(tmp_path)
+    calls = []
+
+    class FakeTTS:
+        def set_gpt_weights(self, p):
+            calls.append(("gpt", p))
+
+        def set_sovits_weights(self, p):
+            calls.append(("sovits", p))
+
+        def set_refer_audio(self, p, t, lang):
+            calls.append(("ref", p, t, lang))
+
+    mgr.apply_preset(char, FakeTTS(), gsv_root=str(gsv))
+    assert ("gpt", str(gsv / "GPT_weights_v2Pro" / "EXP01-e10.ckpt")) in calls
+    assert ("sovits", str(gsv / "SoVITS_weights_v2Pro" / "EXP01_e8_s248.pth")) in calls
+    ref_call = next(c for c in calls if c[0] == "ref")
+    assert ref_call[1] == str(wav)  # 从训练日志推导参考音频
+    assert ref_call[2] == "日本語のテキストです"
+    assert ref_call[3] == "ja"  # 日文文本自动判定 ref_lang
+
+
+def test_experiment_name_parsing():
+    from modules.character_manager import CharManager
+
+    assert CharManager._experiment_name("GPT_weights_v2Pro/EXP01-e10.ckpt") == "EXP01"
+    assert CharManager._experiment_name("EXP01") == "EXP01"

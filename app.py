@@ -45,6 +45,9 @@ SIDEBAR_CSS = f"""
     width: {_SIDEBAR_W}px;
     min-width: 200px;
     max-width: 600px;
+    /* Gradio 内联 flex-grow:1 会覆盖 flex 简写导致侧栏无限变宽挤占聊天区，强制不增长 */
+    flex-grow: 0 !important;
+    flex-shrink: 0 !important;
 }}
 #sidebar-col .gradio-accordion {{ margin-bottom: 6px; }}
 #sidebar-resizer {{
@@ -55,9 +58,18 @@ SIDEBAR_CSS = f"""
     background: transparent;
     user-select: none;
 }}
+#sidebar-resizer-wrap {{
+    flex-grow: 0 !important;
+    flex-shrink: 0 !important;
+    flex-basis: 5px !important;
+    width: 5px !important;
+    min-width: 5px !important;
+    overflow: visible !important;
+}}
 #sidebar-resizer:hover, #sidebar-resizer.active {{ background: rgba(0,0,0,0.15); }}
 body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: none !important; }}
 #sidebar-width-state {{ display: none !important; }}
+#sidebar-collapse-state {{ display: none !important; }}
 /* 章节八十六：移动端/响应式适配 */
 @media (max-width: 900px) {{
     #top-row {{ flex-wrap: wrap; }}
@@ -90,8 +102,12 @@ function init_sidebar_resizer() {
         };
         const saved = localStorage.getItem(KEY);
         if (saved) { apply(parseInt(saved, 10) || 320); }
-        // 初始即折叠（config sidebar_collapsed）时联动隐藏分隔条
-        if (col.style.display === 'none' || !col.offsetParent) {
+        // 初始折叠状态：依据隐藏组件 sidebar-collapse-state（1=折叠）联动隐藏侧栏与分隔条
+        const collapseWrap = document.getElementById('sidebar-collapse-state');
+        const collapseInput = collapseWrap ? collapseWrap.querySelector('input') : null;
+        const collapsed = collapseInput ? collapseInput.value === '1' : false;
+        if (collapsed || !col.offsetParent) {
+            col.style.display = 'none';
             res.style.display = 'none';
         }
         let dragging = false, startX = 0, startW = 0;
@@ -736,11 +752,10 @@ def save_training_settings_handler(gsv_root, cleanup_after, auto_detect, auto_fu
 # ---------- 侧栏折叠 / 配置保存（Phase 9） ----------
 
 
-def persist_sidebar_state(current_visible: bool):
-    """仅持久化折叠状态，不做任何 UI 重渲染（避免 Accordion 内容丢失）。"""
-    new_visible = not current_visible
-    config_mgr.update("app", "sidebar_collapsed", not new_visible)
-    return new_visible
+def persist_sidebar_state(collapsed: int) -> int:
+    """侧栏折叠状态持久化（0=展开，1=折叠）。"""
+    config_mgr.update("app", "sidebar_collapsed", collapsed == 1)
+    return collapsed
 
 
 def save_sidebar_width(width):
@@ -775,7 +790,7 @@ def save_settings_handler(
     provider.update(
         {
             "base_url": base_url or "",
-            "api_key": encrypt_api_key(api_key) if api_key else provider.get("api_key", ""),
+            "api_key": encrypt_api_key(api_key.strip()) if api_key else provider.get("api_key", ""),
             "model": model or "",
             "max_tokens": int(max_tokens),
             "temperature": float(temperature),
@@ -820,7 +835,7 @@ def build_config(
     config = config_mgr.get_raw()
     provider = {
         "base_url": base_url,
-        "api_key": encrypt_api_key(api_key) if api_key else "",
+        "api_key": encrypt_api_key(api_key.strip()) if api_key else "",
         "model": model,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -915,8 +930,7 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
         finish_btn = gr.Button("完成配置", variant="primary")
 
     with gr.Group(visible=not is_first) as main_block:
-        sidebar_initial_visible = not config_mgr.get("app", {}).get("sidebar_collapsed", False)
-        sidebar_state = gr.State(value=sidebar_initial_visible)
+        sidebar_initial_collapsed = bool(config_mgr.get("app", {}).get("sidebar_collapsed", False))
 
         with gr.Row(elem_id="top-row"):
             sidebar_toggle_btn = gr.Button("☰ 侧栏", scale=0)
@@ -935,9 +949,9 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
 
         with gr.Row(elem_id="main-row"):
             # ---- 左栏（可折叠 + 独立滚动条） ----
-            with gr.Column(
-                scale=1, min_width=200, visible=sidebar_initial_visible, elem_id="sidebar-col"
-            ):
+            # 始终 visible=True，初始折叠由 INIT_JS 依据 sidebar-collapse-state 隐藏（Gradio
+            # visible=False 的隐藏无法被前端 js 覆盖，会导致初始折叠后无法展开）
+            with gr.Column(scale=1, min_width=200, visible=True, elem_id="sidebar-col"):
                 with gr.Accordion(i18n.t("角色"), open=False):
                     character_dropdown = gr.Dropdown(
                         choices=list_characters(), label=i18n.t("选择角色"), value=None
@@ -1186,12 +1200,22 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                 gr.Markdown("### " + i18n.t("状态"))
                 status_text = gr.Markdown(_status_text())
 
-            # ---- 章节八十五：侧栏可拖动分隔条 + 宽度同步隐藏组件 ----
-            gr.HTML('<div id="sidebar-resizer" title="拖动调整侧栏宽度"></div>')
-            sidebar_width_state = gr.Number(elem_id="sidebar-width-state")
+            # ---- 章节八十五：侧栏可拖动分隔条（容器禁增长，避免挤占聊天区） ----
+            gr.HTML(
+                '<div id="sidebar-resizer" title="拖动调整侧栏宽度"></div>',
+                elem_id="sidebar-resizer-wrap",
+            )
 
             # ---- 右栏 ----
             with gr.Column(scale=2):
+                # 隐藏同步组件放在聊天列内部（避免成为 main-row 的直接 flex 子项，
+                # 否则其 form 包装会 flex-grow 占位、挤压聊天区）
+                sidebar_width_state = gr.Number(elem_id="sidebar-width-state")
+                # 折叠状态同步组件（0=展开，1=折叠；与宽度同款隐藏组件模式，避免 gr.State 触发
+                # Gradio "Too many arguments" 导致折叠事件失效）
+                sidebar_collapse_state = gr.Number(
+                    value=int(sidebar_initial_collapsed), elem_id="sidebar-collapse-state"
+                )
                 chatbot = gr.Chatbot(
                     label=i18n.t("聊天"), type="tuples", render_markdown=True, height=CHAT_HEIGHT
                 )
@@ -1386,14 +1410,15 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
 
     sidebar_toggle_btn.click(
         fn=persist_sidebar_state,
-        inputs=[sidebar_state],
-        outputs=[sidebar_state],
-        js="""(new_state) => {
+        inputs=[sidebar_collapse_state],
+        outputs=[sidebar_collapse_state],
+        js="""(v) => {
+            const next = v === 1 ? 0 : 1;
             const col = document.getElementById('sidebar-col');
             const res = document.getElementById('sidebar-resizer');
-            if (col) col.style.display = new_state ? '' : 'none';
-            if (res) res.style.display = new_state ? '' : 'none';
-            return new_state;
+            if (col) col.style.display = next === 1 ? 'none' : '';
+            if (res) res.style.display = next === 1 ? 'none' : '';
+            return next;
         }""",
     )
 

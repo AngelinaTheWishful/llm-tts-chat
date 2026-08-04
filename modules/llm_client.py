@@ -22,7 +22,7 @@ class LLMClient(BaseManager):
     def __init__(self, provider_config: dict):
         super().__init__("llm")
         self.base_url = provider_config.get("base_url", "").rstrip("/")
-        self.api_key = decrypt_api_key(provider_config.get("api_key", ""))
+        self.api_key = decrypt_api_key(provider_config.get("api_key", "")).strip()
         self.model = provider_config.get("model", "")
         self.max_tokens = provider_config.get("max_tokens", 2048)
         self.temperature = provider_config.get("temperature", 0.8)

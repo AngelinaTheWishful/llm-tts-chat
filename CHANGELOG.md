@@ -2,6 +2,15 @@
 
 本文件记录所有已发布版本的应用变更。
 
+## [v1.1.4] - 2026-08-04
+
+### 修复
+
+- **LLM 调用失败（API Key 含空白）**：粘贴 API Key 时带入的首尾空白/换行会使 httpx 拒绝发送请求（`Illegal header value`），表现为"连接错误 / LLM 调用失败"；现于配置保存与 LLMClient 处统一 `.strip()` 清理
+- **侧栏折叠按钮无响应 + 无法拖动调整宽度**：折叠事件原以 `gr.State` 作为输入，Gradio 4.44.1 对 `gr.State` 不生成 API 参数（`/info` 中 `params=[]`），浏览器提交报 "Too many arguments" 且服务端不执行 → 折叠不生效；改用隐藏 `gr.Number(sidebar-collapse-state)` 同步组件 + JS 切换 DOM 持久化；侧栏改为 `visible=True`，初始折叠由 INIT_JS 依据隐藏组件值控制（Gradio `visible=False` 的隐藏无法被 JS 覆盖，会导致初始折叠后无法展开）
+- **侧栏右部空白挤占聊天窗**：Gradio 内联 `flex-grow:1` 覆盖 CSS `flex:0 0 320px` 致侧栏变宽；主行内隐藏组件形成的 `form` 与分隔条容器也被 `flex-grow` 占位；修复 `#sidebar-col` 禁增长、隐藏组件移入聊天列、分隔条容器固定 5px，聊天窗恢复剩余空间
+- **TTS 合成失败（无参考音频）**：角色无 `recommended_settings` 音色预设时既不设权重也不设参考音频，`/tts` 请求 `ref_audio_path` 为空返回 400；`apply_preset` 回退到扫描默认 GPT/SoVITS 权重，并从训练实验日志（`5-wav32k` 首条 + `2-name2text.txt` 文本）推导参考音频，TTS 即可用
+
 ## [v1.1.3] - 2026-08-04
 
 ### 修复
