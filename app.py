@@ -74,8 +74,9 @@ body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: no
 """
 
 # 章节八十五：侧栏拖动调整宽度初始化 JS（页面加载即注入）
+# 注意：Gradio 以 (${js})() 包装 js，必须为函数表达式而非 IIFE（分号会报错）
 INIT_JS = """
-(function () {
+function init_sidebar_resizer() {
     const MIN = 200, MAX = 600;
     const KEY = 'llm_tts_sidebar_width';
     function init() {
@@ -123,7 +124,7 @@ INIT_JS = """
         });
     }
     init();
-})();
+}
 """
 
 char_mgr = CharManager(CHARACTERS_DIR, config_manager=config_mgr)
