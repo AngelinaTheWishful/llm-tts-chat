@@ -38,13 +38,25 @@ class LLMClient(BaseManager):
     ) -> str:
         """调用 LLM 生成回复（非流式），返回文字并记录 token 用量。"""
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
-
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=full_messages,
-            max_tokens=max_tokens or self.max_tokens,
-            temperature=self.temperature,
+        self.log(
+            "debug",
+            f"LLM 调用开始: base_url={self.base_url} model={self.model} "
+            f"max_tokens={max_tokens or self.max_tokens} messages={len(full_messages)}",
         )
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=full_messages,
+                max_tokens=max_tokens or self.max_tokens,
+                temperature=self.temperature,
+            )
+        except Exception as e:
+            self.log(
+                "error",
+                f"LLM API 请求异常: base_url={self.base_url} model={self.model} "
+                f"错误类型={type(e).__name__} 错误={str(e)[:500]}",
+            )
+            raise
 
         usage = getattr(resp, "usage", None)
         if usage is not None:
@@ -53,6 +65,14 @@ class LLMClient(BaseManager):
                 "completion_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,
             }
+            self.log(
+                "debug",
+                f"LLM 调用成功: model={self.model} "
+                f"返回长度={len(resp.choices[0].message.content or '')} "
+                f"token={self.last_usage}",
+            )
+        else:
+            self.log("debug", f"LLM 调用成功（无 usage 信息）: model={self.model}")
         return resp.choices[0].message.content or ""
 
     def summarize(self, history: list[dict]) -> str:
@@ -143,6 +163,13 @@ def call_llm_with_fallback(
     """
     if session_provider:
         provider_names = [session_provider] if session_provider in providers else []
+        if not provider_names:
+            llm_logger = LLMClient(providers.get(session_provider) or {})
+            llm_logger.log(
+                "warning",
+                f"会话级提供商 {session_provider!r} 不在已配置提供商列表 "
+                f"{list(providers.keys())} 中，无可用提供商",
+            )
     else:
         provider_names = sorted(
             providers.keys(),
@@ -165,11 +192,17 @@ def call_llm_with_fallback(
             continue
         try:
             client = LLMClient(config)
+            client.log(
+                "info",
+                f"尝试提供商 [{name}]: base_url={config.get('base_url')} "
+                f"model={config.get('model')} provider_count={len(provider_names)}",
+            )
             text = call_llm_with_rate_limit_retry(client, system_prompt, messages)
+            client.log("info", f"提供商 [{name}] 调用成功")
             return text, name
         except Exception as e:
             last_error = e
-            continue
+            client.log("warning", f"提供商 [{name}] 调用失败，尝试下一个: {str(e)[:300]}")
 
     if last_error is None:
         raise ValueError("没有可用的 LLM 提供商")

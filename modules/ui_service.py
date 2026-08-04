@@ -139,6 +139,19 @@ class UiService(BaseManager):
         providers = config.get("llm_providers", {})
         llm_cfg = config.get("llm", {})
         session_provider = self.get_session_provider(self.active_session)
+        self.log(
+            "debug",
+            f"LLM 发送准备: 提供商数量={len(providers)} 名称={list(providers.keys())} "
+            f"active_provider={llm_cfg.get('active_provider', '')} "
+            f"session_provider={session_provider or '跟随全局'} "
+            f"会话={self.active_session}",
+        )
+        if not providers:
+            self.log(
+                "warning",
+                "LLM 发送前检测到 llm_providers 为空，将抛出『没有可用的 LLM 提供商』——"
+                "请检查 config.json 或侧栏配置面板是否已填写提供商",
+            )
         try:
             reply, provider_name = call_llm_with_fallback(
                 providers,
@@ -153,6 +166,7 @@ class UiService(BaseManager):
             self.conv_mgr.remove_last_message(self.active_session, role="user")
             self.log("error", f"LLM 调用失败（已回滚用户消息）: {e}")
             return {"error": f"LLM 调用失败: {e}"}
+        self.log("info", f"LLM 调用成功: 提供商={provider_name} 回复长度={len(reply)}")
 
         # 6. 检查上下文长度 → 摘要压缩（extract_with_llm 时顺带提取记忆）
         self.conv_mgr.maybe_summarize(
@@ -365,10 +379,16 @@ class UiService(BaseManager):
         return provider or None
 
     def set_session_provider(self, session_id: str | None, provider: str) -> bool:
-        """设置会话级提供商（空值 = 跟随全局），持久化到 provider.txt。"""
+        """设置会话级提供商（空值 = 跟随全局），持久化到 provider.txt。
+
+        兼容前端误传标签「跟随全局」：统一归一为空值，避免被当作提供商名
+        导致"没有可用的 LLM 提供商"。
+        """
         if not session_id or not self.conv_mgr.session_exists(session_id):
             return False
         provider = (provider or "").strip()
+        if provider == "跟随全局":
+            provider = ""
         self.session_providers[session_id] = provider
         p = self._provider_file(session_id)
         if provider:

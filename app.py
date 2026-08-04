@@ -392,6 +392,7 @@ def save_character_handler(
         except Exception as e:
             logger.warning(f"头像更新失败: {e}")
 
+    gr.Info(f"🟢 角色「{name}」已保存")
     return (
         gr.update(value=f"🟢 角色「{name}」已保存"),
         gr.update(choices=list_characters()),
@@ -575,7 +576,8 @@ def current_session_provider_handler(session_id):
     if not session_id:
         return gr.update(value="")
     p = ui_service.get_session_provider(session_id)
-    return gr.update(value=p or "跟随全局")
+    # 下拉 value 用空串（其标签为「跟随全局」），不能用标签文本，否则会被当作提供商写入 provider.txt
+    return gr.update(value=p or "")
 
 
 def set_session_provider_handler(provider):
@@ -635,6 +637,7 @@ def save_advanced_settings_handler(
     # R10：代理真实接线（注入环境变量）
     apply_proxy_env(proxy)
     logger.info("高级设置已保存（性能/会话超时/通知音效/代理/记忆）")
+    gr.Info("🟢 高级设置已保存，即时生效")
     return gr.update(value="🟢 高级设置已保存，即时生效")
 
 
@@ -749,6 +752,7 @@ def save_training_settings_handler(gsv_root, cleanup_after, auto_detect, auto_fu
     gt["auto_full"] = bool(auto_full)
     config_mgr.replace(cfg)
     training_ops.gsv_root = Path(gsv_root).resolve() if gsv_root else Path("")
+    gr.Info("🟢 训练配置已保存，即时生效")
     return gr.update(value="🟢 训练配置已保存，即时生效")
 
 
@@ -809,6 +813,7 @@ def save_settings_handler(
     # 即时生效：TTS 地址立即更新（LLM 每次发送时从 config 读取，天然即时）
     tts_client.base = config["tts"]["api_base_url"].rstrip("/")
     logger.info(f"侧栏配置已保存，TTS 地址: {tts_client.base}")
+    gr.Info("🟢 配置已保存，即时生效")
     return gr.update(value="🟢 配置已保存，即时生效")
 
 
