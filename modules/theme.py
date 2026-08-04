@@ -77,8 +77,20 @@ class Theme:
         self.config = self.load()
 
     def to_css(self) -> str:
-        """将主题配置转换为 CSS 字符串，注入 Gradio。"""
-        c = self.config.get("custom", {})
+        """将主题配置转换为 CSS 字符串，注入 Gradio。
+
+        - mode=light/dark：输出对应主题
+        - mode=system（章节八十八 88.3）：浅色为默认，深色通过
+          `@media (prefers-color-scheme: dark)` 自动跟随系统
+        """
+        mode = self.config.get("mode", "light")
+        if mode == "system":
+            css = self._build_theme_css(LIGHT_THEME["custom"])
+            css += self._build_system_dark_css(DARK_THEME["custom"])
+            return css
+        return self._build_theme_css(self.config.get("custom", {}))
+
+    def _build_theme_css(self, c: dict) -> str:
         bg = c.get("chat_background", {}).get("value", "#F0F0F0")
         css = f"""
         :root {{
@@ -110,6 +122,29 @@ class Theme:
         if custom_css:
             css += f"\n{custom_css}"
         return css
+
+    def _build_system_dark_css(self, c: dict) -> str:
+        """主题跟随系统：深色覆盖（prefers-color-scheme: dark）。"""
+        bg = c.get("chat_background", {}).get("value", "#262626")
+        return f"""
+        @media (prefers-color-scheme: dark) {{
+            :root {{
+                --primary-color: {c.get('primary_color', '#61A5E0')};
+                --bg-color: {c.get('background_color', '#1F1F1F')};
+                --user-bubble: {c.get('user_bubble_color', '#2E7D32')};
+                --ai-bubble: {c.get('ai_bubble_color', '#2D2D2D')};
+                --text-color: {c.get('text_color', '#E0E0E0')};
+                --timestamp-color: {c.get('timestamp_color', '#888888')};
+            }}
+            body {{
+                background-color: var(--bg-color);
+                color: var(--text-color);
+            }}
+            .gradio-container {{
+                background-color: {bg};
+            }}
+        }}
+        """
 
     def mode(self) -> str:
         return self.config.get("mode", "light")

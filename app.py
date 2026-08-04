@@ -223,12 +223,13 @@ def list_characters() -> list[str]:
 def send_message_handler(user_input, text_lang, voice_lang):
     result = ui_service.send_message(user_input, text_lang, voice_lang)
     if "error" in result:
+        # 章节八十八 88.3：失败保留输入，用户点击「发送」即可一键重发（消息已回滚，不会重复）
         return (
-            gr.update(visible=True, value=f"🔴 {result['error']}"),
+            gr.update(visible=True, value=f"🔴 {result['error']}（输入已保留，点击发送可重试）"),
             gr.update(visible=False, value=None),
             gr.update(value=[]),
             _status_text(),
-            gr.update(value=""),
+            gr.update(value=user_input),
         )
     chatbot_value = ui_service.messages_to_chatbot(result["messages"])
     # R7：TTS 不可用时给出可见提示（黄色），而非静默无语音
@@ -455,6 +456,46 @@ def save_theme_handler(mode):
     theme_path = Path(__file__).resolve().parent / "theme_config.json"
     theme_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     return ""
+
+
+# 章节八十八 88.4/88.3：操作指引内容
+MAIN_HELP_TEXT = """
+### 快速上手
+1. **选角色**：左侧「角色」下拉选择一个角色（首次可能需先导入/创建）
+2. **新建会话**：左侧「会话」→「新建会话」，AI 会打招呼
+3. **发送消息**：底部输入框打字 → **Enter 发送**，**Shift+Enter 换行**
+4. **语音回复**：自动合成语音并播放（若超时 20s 会先回文字）
+
+### 常见问题
+- **没有声音**：确认 GPT-SoVITS 已启动，顶栏状态显示 `🟢 TTS API 在线`
+- **LLM 调用失败**：到「配置」面板点 **测试连通性** 查看具体错误；`API Key` 不要带多余空格
+- **改音色**：「编辑角色」→「训练音色」选择已恢复的实验，或把参考音频放到角色目录
+"""
+
+SIDE_HELP_TEXT = """
+### 侧栏各区块说明
+- **角色**：选择/刷新/导入角色卡（TavernAI/RisuAI/Chub/CAI）
+- **编辑角色**：修改角色设定/头像/音色，保存到角色
+- **会话**：新建/切换/删除会话，可导出/导入
+- **配置**：LLM/TTS 提供商设置 + 连通性测试
+- **高级设置**：性能/超时/音效/代理/记忆
+- **工具**：导出/导入会话、搜索、统计、回收站
+- **训练管理**：训练结果打包/恢复/清理
+
+> 点击 ☰ 可折叠侧栏；拖动右侧分隔条可调整宽度
+"""
+
+
+def main_help_handler():
+    """主界面「使用帮助」切换显示简明操作流程。"""
+    gr.Info("已打开使用帮助")
+    return gr.update(value=MAIN_HELP_TEXT, visible=True)
+
+
+def side_help_handler():
+    """侧栏「说明」切换显示各区块用途。"""
+    gr.Info("已打开侧栏说明")
+    return gr.update(value=SIDE_HELP_TEXT, visible=True)
 
 
 # ---------- 工具：导出/导入/搜索/统计（Phase 6） ----------
@@ -823,6 +864,82 @@ def save_sidebar_width(width):
         return ""
 
 
+# 章节八十八 88.2：提供商预设模板
+PROVIDER_PRESETS = {
+    "deepseek": ("https://api.deepseek.com", "deepseek-v4-flash"),
+    "openai": ("https://api.openai.com/v1", "gpt-4o-mini"),
+    "qwen": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+    "zhipu": ("https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"),
+}
+
+
+def preset_provider_handler(preset):
+    """选中提供商模板自动填 base_url 与 model（章节八十八 88.2）。"""
+    if preset in PROVIDER_PRESETS:
+        url, model = PROVIDER_PRESETS[preset]
+        return gr.update(value=url), gr.update(value=model), gr.update(value=preset)
+    return gr.update(), gr.update(), gr.update()
+
+
+def test_connectivity_handler(tts_url, provider_name, base_url, api_key, model):
+    """配置面板连通性测试（章节八十八 88.1）：只读测试，不写配置。
+
+    API Key 采用表单值；若留空（R11 遮蔽）则回退使用已保存的 Key。
+    """
+    lines = []
+    # 1) TTS API
+    try:
+        tts = TTSClient(tts_url or "http://127.0.0.1:9880")
+        if tts.check_api():
+            lines.append(f"✅ TTS API 在线：{tts.base}")
+        else:
+            lines.append(f"❌ TTS API 离线：无法连接 {tts.base}（请确认 GPT-SoVITS 已启动）")
+    except Exception as e:
+        lines.append(f"❌ TTS 测试异常：{str(e)[:100]}")
+
+    # 2) LLM API（用表单当前值发一次极短调用）
+    if not base_url or not model:
+        lines.append("❌ LLM：请先填写 API Base URL 与模型名称")
+    else:
+        from modules.llm_client import LLMClient
+
+        try:
+            # R11 遮蔽：表单 Key 为空时回退到已保存 Key
+            saved_cfg = config_mgr.get_active_provider_config()
+            effective_key = api_key or saved_cfg.get("api_key", "")
+            client = LLMClient(
+                {
+                    "base_url": base_url,
+                    "api_key": effective_key,
+                    "model": model,
+                    "max_tokens": 8,
+                    "temperature": 0.0,
+                    "text_language": "中文",
+                }
+            )
+            client.chat(
+                "你是连通性测试助手",
+                [{"role": "user", "content": "只回复两个字：OK"}],
+                max_tokens=8,
+            )
+            lines.append(f"✅ LLM 调用成功：{provider_name or model} · {model}")
+        except Exception as e:
+            msg = str(e)
+            if "credentials" in msg.lower() or "api_key" in msg.lower():
+                lines.append("❌ LLM：未填写 API Key（请填写或在「保存配置」保存过 Key）")
+            elif "401" in msg or "Invalid token" in msg or "invalid" in msg.lower():
+                lines.append("❌ LLM API Key 无效（401）：请检查 Key")
+            elif "model_not_found" in msg or "model not found" in msg.lower():
+                lines.append(f"❌ 模型名不可用：{model}（请到服务商查询可用模型）")
+            elif "connect" in msg.lower() or "Connection" in msg:
+                lines.append(f"❌ 无法连接 LLM 服务：{base_url}")
+            else:
+                lines.append(f"❌ LLM 调用失败：{msg[:140]}")
+
+    gr.Info("连通性测试完成")
+    return gr.update(value="\n".join(lines), visible=True)
+
+
 def save_settings_handler(
     gsv_root,
     tts_url,
@@ -990,6 +1107,8 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
 
         with gr.Row(elem_id="top-row"):
             sidebar_toggle_btn = gr.Button("☰ 侧栏", scale=0)
+            # 章节八十八 88.4：主界面操作指引按钮
+            main_help_btn = gr.Button("❓ 使用帮助", scale=0)
             lang_dd = gr.Dropdown(
                 choices=[("中文", "zh_CN"), ("日本語", "ja_JP"), ("English", "en_US")],
                 value=config_mgr.get("app", {}).get("language", "zh_CN"),
@@ -997,17 +1116,24 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                 scale=1,
             )
             theme_dd = gr.Dropdown(
-                choices=[("浅色", "light"), ("深色", "dark")],
-                value=theme.mode(),
+                choices=[("浅色", "light"), ("深色", "dark"), ("跟随系统", "system")],
+                value=theme.mode() if theme.mode() in ("light", "dark") else "system",
                 label="主题",
                 scale=1,
             )
+
+        # 章节八十八 88.4/88.3：主界面操作指引（含新手引导）
+        main_help_md = gr.Markdown(visible=False)
 
         with gr.Row(elem_id="main-row"):
             # ---- 左栏（可折叠 + 独立滚动条） ----
             # 始终 visible=True，初始折叠由 INIT_JS 依据 sidebar-collapse-state 隐藏（Gradio
             # visible=False 的隐藏无法被前端 js 覆盖，会导致初始折叠后无法展开）
             with gr.Column(scale=1, min_width=200, visible=True, elem_id="sidebar-col"):
+                # 章节八十八 88.4：侧栏操作指引按钮
+                with gr.Row():
+                    side_help_btn = gr.Button("❓ 侧栏说明", scale=1)
+                side_help_md = gr.Markdown(visible=False)
                 with gr.Accordion(i18n.t("角色"), open=False):
                     character_dropdown = gr.Dropdown(
                         choices=list_characters(), label=i18n.t("选择角色"), value=None
@@ -1069,6 +1195,18 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                         ),
                     )
                     cfg_provider = gr.Textbox(label="提供商名称", value=_active_name)
+                    # 章节八十八 88.2：提供商预设模板（选中自动填 URL/模型）
+                    cfg_preset_dd = gr.Dropdown(
+                        choices=[
+                            ("DeepSeek", "deepseek"),
+                            ("OpenAI", "openai"),
+                            ("通义千问", "qwen"),
+                            ("智谱", "zhipu"),
+                        ],
+                        value=None,
+                        label="提供商模板（选填，自动填 URL 与模型）",
+                        info="选中后自动填入 API Base URL 与模型名称，只需填 API Key",
+                    )
                     cfg_base_url = gr.Textbox(
                         label="API Base URL", value=_active_cfg.get("base_url", "")
                     )
@@ -1106,6 +1244,9 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                         label="本会话提供商（可选）",
                         info="选择后仅本会话使用该提供商",
                     )
+                    # 章节八十八 88.1：连通性测试按钮
+                    cfg_test_btn = gr.Button("测试连通性（LLM / TTS）", variant="secondary")
+                    cfg_test_status = gr.Markdown(visible=False)
                     cfg_save_btn = gr.Button("保存配置", variant="primary")
                     cfg_status = gr.Markdown(visible=False)
 
@@ -1500,6 +1641,21 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
         ],
         outputs=[cfg_status],
     )
+    # 章节八十八 88.2：提供商模板自动填 URL/模型
+    cfg_preset_dd.change(
+        fn=preset_provider_handler,
+        inputs=[cfg_preset_dd],
+        outputs=[cfg_base_url, cfg_model, cfg_provider],
+    )
+    # 章节八十八 88.1：连通性测试
+    cfg_test_btn.click(
+        fn=test_connectivity_handler,
+        inputs=[cfg_tts_url, cfg_provider, cfg_base_url, cfg_api_key, cfg_model],
+        outputs=[cfg_test_status],
+    )
+    # 章节八十八 88.4：操作指引按钮
+    main_help_btn.click(fn=main_help_handler, outputs=[main_help_md])
+    side_help_btn.click(fn=side_help_handler, outputs=[side_help_md])
 
     export_btn.click(fn=export_session_handler, outputs=[export_file])
     import_btn.click(
