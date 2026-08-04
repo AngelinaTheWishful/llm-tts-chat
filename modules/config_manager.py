@@ -31,6 +31,7 @@ DEFAULT_CONFIG = {
         "top_p": 1.0,
         "temperature": 1.0,
         "speed": 1.0,
+        "synthesis_timeout": 20,
     },
     "app": {
         "port": 7861,

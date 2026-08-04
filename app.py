@@ -4,7 +4,9 @@ Phase 4：左右分栏主界面 + 配置向导（条件可见性）。
 """
 
 import argparse
+import ctypes
 import json
+import os
 import socket
 import sys
 from pathlib import Path
@@ -162,13 +164,52 @@ training_ops = TrainingOps(
 session_options = [(s["name"], s["id"]) for s in conv_mgr.list_sessions()]
 
 
+def _pid_alive(pid: int) -> bool:
+    """检查 PID 是否存活（Windows）。"""
+    if not pid or pid <= 0:
+        return False
+    process_query_limited = 0x1000
+    try:
+        h = ctypes.windll.kernel32.OpenProcess(process_query_limited, False, pid)
+        if not h:
+            return False
+        ctypes.windll.kernel32.CloseHandle(h)
+        return True
+    except Exception:
+        return False
+
+
+def acquire_single_instance(lock_path: Path) -> bool:
+    """获取单实例锁（app.lock 含 PID）。
+
+    - 锁存在且 PID 存活 → 已有实例在跑，返回 False（拒绝启动）
+    - 锁存在但 PID 已死 → 清除残留锁后重新获取
+    - 写锁失败（如权限）→ 不阻塞启动，返回 True
+    """
+    try:
+        if lock_path.exists():
+            text = lock_path.read_text(encoding="utf-8").strip()
+            if text.isdigit() and _pid_alive(int(text)):
+                return False
+            lock_path.unlink(missing_ok=True)
+        lock_path.write_text(str(os.getpid()), encoding="utf-8")
+        return True
+    except OSError:
+        return True
+
+
 def find_available_port(start_port: int = 7861, max_attempts: int = 10) -> int:
-    """自动寻找可用端口。"""
-    for port in range(start_port, start_port + max_attempts):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("127.0.0.1", port)) != 0:
-                return port
-    raise RuntimeError(f"无法找到可用端口（{start_port}~{start_port + max_attempts - 1} 均被占用）")
+    """检查配置端口是否可用。
+
+    方案 D：配置端口被占用则判定已有实例并抛错（**不再自动换端口**，
+    避免多实例并存导致端口错位/配置互相覆盖）。
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex(("127.0.0.1", start_port)) != 0:
+            return start_port
+    raise RuntimeError(
+        f"端口 {start_port} 已被占用——app 可能已在运行，请勿重复启动（或改用 --port 指定其他端口）"
+    )
 
 
 def list_characters() -> list[str]:
@@ -420,10 +461,16 @@ def save_theme_handler(mode):
 
 
 def export_session_handler():
+    """导出当前会话 zip（章节八十七 87.3：无会话/失败给弹窗提示，成功显示下载链接）。"""
     if not ui_service.active_session:
-        return gr.update(value=None)
+        gr.Info("请先选择会话后再导出")
+        return gr.update(visible=False, value=None)
     path = conv_mgr.export_session(ui_service.active_session)
-    return gr.update(value=path if path else None)
+    if not path:
+        gr.Info("导出失败：会话数据不存在")
+        return gr.update(visible=False, value=None)
+    gr.Info("会话已导出，可点击下方链接下载")
+    return gr.update(visible=True, value=path)
 
 
 def import_session_handler(file):
@@ -1515,6 +1562,20 @@ def main() -> None:
     if args.debug:
         setup_logger("app", debug=True)
 
+    # 方案 D：单实例锁（杜绝重复启动多实例导致端口错位/配置覆盖）
+    lock_path = PROJECT_ROOT / "app.lock"
+    if not acquire_single_instance(lock_path):
+        msg = "检测到 app 已在运行（app.lock 存在且进程存活），请勿重复启动"
+        logger.error(msg)
+        print(f"[ERROR] {msg}")
+        sys.exit(1)
+    try:
+        _main_impl(args)
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def _main_impl(args: argparse.Namespace) -> None:
     # 数据迁移（章节四十九）：启动时检测并执行
     migration_mgr = MigrationManager(
         config_mgr,

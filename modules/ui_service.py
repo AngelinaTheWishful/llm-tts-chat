@@ -3,6 +3,7 @@
 将 Gradio 组件事件与 Core 层（LLM/TTS/CharMgr/ConvMgr）解耦。
 """
 
+import threading
 from pathlib import Path
 
 from modules.base_manager import BaseManager
@@ -17,6 +18,9 @@ from modules.memory_store import (
 )
 from modules.prompt_builder import build_messages
 from modules.tts_client import TTSClient
+
+# 章节八十七 87.2：TTS 合成超时预算（秒），超过则本次先回复文字
+DEFAULT_TTS_TIMEOUT = 20.0
 
 
 def sanitize_input(
@@ -182,19 +186,27 @@ class UiService(BaseManager):
             )
             self._pending_memories = []
 
-        # 7. TTS 合成（R7：离线时实时探测，失败不阻断文字显示）
+        # 7. TTS 合成（R7：离线时实时探测，失败不阻断文字显示；
+        #    章节八十七 87.2：20s 超时预算，超时先回复文字）
         audio_data = None
         tts_notice = ""
         norm = config.get("audio_normalization", {})
         if self._ensure_tts_ready():
             try:
-                audio_data = self.tts_client.synthesize_normalized(
-                    reply,
-                    voice_lang,
-                    params=self._tts_params(),
-                    target_db=norm.get("target_dB", -3.0),
-                    global_volume=norm.get("global_volume", 1.0),
+                audio_data, tts_timed_out = self._run_with_timeout(
+                    lambda: self.tts_client.synthesize_normalized(
+                        reply,
+                        voice_lang,
+                        params=self._tts_params(),
+                        target_db=norm.get("target_dB", -3.0),
+                        global_volume=norm.get("global_volume", 1.0),
+                    ),
+                    timeout=self._tts_timeout(),
                 )
+                if tts_timed_out:
+                    tts_notice = f"语音合成超时（>{self._tts_timeout():.0f}s），已先回复文字"
+                elif audio_data is None:
+                    tts_notice = "TTS 合成失败，本次回复无语音"
             except Exception as e:
                 self.log("warning", f"TTS 合成失败（不影响文字）: {e}")
                 tts_notice = "TTS 合成失败，本次回复无语音"
@@ -283,19 +295,56 @@ class UiService(BaseManager):
             "speed": tts.get("speed", 1.0),
         }
 
+    def _tts_timeout(self) -> float:
+        """读取 TTS 合成超时预算（config tts.synthesis_timeout，默认 20s）。"""
+        raw = self.config_mgr.get("tts", {}).get("synthesis_timeout", DEFAULT_TTS_TIMEOUT)
+        return float(raw or DEFAULT_TTS_TIMEOUT)
+
+    def _run_with_timeout(
+        self, fn, timeout: float = DEFAULT_TTS_TIMEOUT
+    ) -> tuple[bytes | None, bool]:
+        """在子线程运行 TTS 合成 fn，timeout 秒内未完成则视为超时。
+
+        Returns:
+            (音频或 None, 是否超时)。超时后线程在后台继续，结果丢弃。
+        """
+        result: dict = {}
+
+        def _run() -> None:
+            try:
+                result["value"] = fn()
+            except Exception as e:  # noqa: BLE001
+                result["error"] = e
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            return None, True
+        if "error" in result:
+            raise result["error"]
+        return result.get("value"), False
+
     def _synthesize_speech(self, text: str, voice_lang: str) -> bytes | None:
-        """合成语音（失败返回 None，不影响文字流程）。"""
+        """合成语音（失败/超时返回 None，不影响文字流程）。"""
         if not self._ensure_tts_ready():
             return None
         norm = self.config_mgr.get("audio_normalization", {})
         try:
-            return self.tts_client.synthesize_normalized(
-                text,
-                voice_lang,
-                params=self._tts_params(),
-                target_db=norm.get("target_dB", -3.0),
-                global_volume=norm.get("global_volume", 1.0),
+            audio, timed_out = self._run_with_timeout(
+                lambda: self.tts_client.synthesize_normalized(
+                    text,
+                    voice_lang,
+                    params=self._tts_params(),
+                    target_db=norm.get("target_dB", -3.0),
+                    global_volume=norm.get("global_volume", 1.0),
+                ),
+                timeout=self._tts_timeout(),
             )
+            if timed_out:
+                self.log("warning", f"TTS 合成超时（>{self._tts_timeout():.0f}s），本次无语音")
+                return None
+            return audio
         except Exception as e:
             self.log("warning", f"TTS 合成失败（不影响文字）: {e}")
             return None
