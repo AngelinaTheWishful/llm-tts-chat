@@ -31,7 +31,9 @@ def _make_workdir(tmp_path: Path) -> Path:
     for d in COPY_DIRS:
         shutil.copytree(PROJECT / d, work / d)
     for f in COPY_FILES:
-        shutil.copy2(PROJECT / f, work / f)
+        src = PROJECT / f
+        if src.exists():  # 部分文件被 gitignore，CI 检出可能缺失（如 theme_config.json）
+            shutil.copy2(src, work / f)
     for d in ("conversations", "logs", "temp_audio", "trash"):
         (work / d).mkdir()
     return work
