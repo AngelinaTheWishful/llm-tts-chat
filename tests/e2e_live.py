@@ -10,6 +10,7 @@
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -525,6 +526,29 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
             check("B20 角色卡导入", False, str(e))
     else:
         check("B20 角色卡导入", False, "端点缺失")
+
+    # 章节九十：报告系统验证（startup_report + run_report 文本/JSONL 双份，含错误码）
+    try:
+        report_dir = work / "logs"
+        startup_txt = sorted(report_dir.glob("startup_report_*.txt"))
+        run_txt = sorted(report_dir.glob("run_report_*.txt"))
+        run_json = sorted(report_dir.glob("run_report_*.jsonl"))
+        check(
+            "B21 报告文件生成（文本+JSONL）",
+            bool(startup_txt and run_txt and run_json),
+            f"startup={len(startup_txt)} run_txt={len(run_txt)} run_jsonl={len(run_json)}",
+        )
+        content = ""
+        if run_txt:
+            content = run_txt[-1].read_text(encoding="utf-8")
+        has_code = bool(re.search(r"\[(?:LLM|CFG|TTS|UI|STP|SYS|CHR|CONV|MEM|TRN)-\d+\]", content))
+        check(
+            "B21 报告含步骤与错误码",
+            ("LLM 调用" in content or "输入校验" in content) and has_code,
+            content.splitlines()[0][:80] if content else "（无内容）",
+        )
+    except Exception as e:
+        check("B21 报告系统", False, str(e))
 
 
 def run_server_checks():
