@@ -164,7 +164,7 @@ class ConfigManager(BaseManager):
                 user_config = json.loads(self.path.read_text(encoding="utf-8-sig"))
                 _deep_merge(config, user_config)
             except (json.JSONDecodeError, OSError) as e:
-                self.log("error", f"配置加载失败，使用默认配置: {e}")
+                self.log("error", f"[CFG-001] 配置加载失败，使用默认配置: {e}")
         self._config = config
         self.check_data_version()
         return self._config
@@ -201,7 +201,7 @@ class ConfigManager(BaseManager):
                 os.replace(tmp_path, self.path)
                 self.log("debug", f"配置已保存: {self.path}")
             except OSError as e:
-                self.log("error", f"配置保存失败: {e}")
+                self.log("error", f"[CFG-002] 配置保存失败: {e}")
 
     def get(self, key: str, default=None):
         """读取顶层配置项。"""

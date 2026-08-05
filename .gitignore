@@ -42,3 +42,6 @@ dev_archive/logs/*
 # 系统
 .DS_Store
 Thumbs.db
+
+# 运行时单实例锁
+app.lock

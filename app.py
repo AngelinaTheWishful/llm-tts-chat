@@ -16,9 +16,11 @@ import gradio as gr
 from modules.character_manager import CharManager
 from modules.config_manager import ConfigManager, apply_proxy_env, encrypt_api_key
 from modules.conversation_manager import ConvManager
+from modules.error_codes import format_error
 from modules.i18n import I18n
 from modules.logger import setup_logger
 from modules.migration import MigrationManager
+from modules.reporter import write_entry
 from modules.theme import Theme
 from modules.training_ops import TrainingOps, format_size
 from modules.tts_client import TTSClient
@@ -75,6 +77,13 @@ SIDEBAR_CSS = f"""
 body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: none !important; }}
 #sidebar-width-state {{ display: none !important; }}
 #sidebar-collapse-state {{ display: none !important; }}
+/* 章节八十八 88.4：使用帮助/侧栏说明宽度与面板样式 */
+#main-help-panel {{
+    max-width: {_SIDEBAR_W}px;
+    margin-bottom: 6px;
+}}
+#main-help-panel .gradio-markdown {{ max-width: {_SIDEBAR_W}px; }}
+#side-help-panel {{ margin-bottom: 6px; }}
 /* 章节八十六：移动端/响应式适配 */
 @media (max-width: 900px) {{
     #top-row {{ flex-wrap: wrap; }}
@@ -298,7 +307,7 @@ def import_card_handler(file):
         imported, warnings = char_mgr.import_card(file)
     except Exception as e:
         return (
-            gr.update(value=f"🔴 导入失败: {e}"),
+            gr.update(value=f"🔴 {format_error(e, prefix='角色卡导入失败')}"),
             gr.update(choices=list_characters()),
         )
     lines = []
@@ -396,7 +405,7 @@ def save_character_handler(
     """保存角色编辑表单。"""
     name = (char_name or "").strip()
     if not name:
-        return gr.update(value="🔴 角色名称不能为空")
+        return gr.update(value="🔴 [CHR-003] 角色名称不能为空")
 
     character = char_mgr.get_character(character_name) or {"name": name}
     character["name"] = name
@@ -487,15 +496,25 @@ SIDE_HELP_TEXT = """
 
 
 def main_help_handler():
-    """主界面「使用帮助」切换显示简明操作流程。"""
+    """主界面「使用帮助」显示简明操作流程（面板宽度与侧栏一致）。"""
     gr.Info("已打开使用帮助")
-    return gr.update(value=MAIN_HELP_TEXT, visible=True)
+    return gr.update(visible=True), gr.update(value=MAIN_HELP_TEXT, visible=True)
+
+
+def close_main_help_handler():
+    """关闭主界面「使用帮助」面板。"""
+    return gr.update(visible=False)
 
 
 def side_help_handler():
-    """侧栏「说明」切换显示各区块用途。"""
+    """侧栏「说明」显示各区块用途。"""
     gr.Info("已打开侧栏说明")
-    return gr.update(value=SIDE_HELP_TEXT, visible=True)
+    return gr.update(visible=True), gr.update(value=SIDE_HELP_TEXT, visible=True)
+
+
+def close_side_help_handler():
+    """关闭侧栏「说明」面板。"""
+    return gr.update(visible=False)
 
 
 # ---------- 工具：导出/导入/搜索/统计（Phase 6） ----------
@@ -901,6 +920,7 @@ def test_connectivity_handler(tts_url, provider_name, base_url, api_key, model):
     if not base_url or not model:
         lines.append("❌ LLM：请先填写 API Base URL 与模型名称")
     else:
+        from modules.error_codes import classify
         from modules.llm_client import LLMClient
 
         try:
@@ -924,17 +944,8 @@ def test_connectivity_handler(tts_url, provider_name, base_url, api_key, model):
             )
             lines.append(f"✅ LLM 调用成功：{provider_name or model} · {model}")
         except Exception as e:
-            msg = str(e)
-            if "credentials" in msg.lower() or "api_key" in msg.lower():
-                lines.append("❌ LLM：未填写 API Key（请填写或在「保存配置」保存过 Key）")
-            elif "401" in msg or "Invalid token" in msg or "invalid" in msg.lower():
-                lines.append("❌ LLM API Key 无效（401）：请检查 Key")
-            elif "model_not_found" in msg or "model not found" in msg.lower():
-                lines.append(f"❌ 模型名不可用：{model}（请到服务商查询可用模型）")
-            elif "connect" in msg.lower() or "Connection" in msg:
-                lines.append(f"❌ 无法连接 LLM 服务：{base_url}")
-            else:
-                lines.append(f"❌ LLM 调用失败：{msg[:140]}")
+            code, msg = classify(e)
+            lines.append(f"❌ LLM 调用失败：[{code}] {msg}")
 
     gr.Info("连通性测试完成")
     return gr.update(value="\n".join(lines), visible=True)
@@ -1122,18 +1133,26 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                 scale=1,
             )
 
-        # 章节八十八 88.4/88.3：主界面操作指引（含新手引导）
-        main_help_md = gr.Markdown(visible=False)
+        # 章节八十八 88.4/88.3：主界面操作指引（含新手引导），宽度与侧栏一致 + 可关闭
+        main_help_panel = gr.Column(elem_id="main-help-panel", visible=False)
+        with main_help_panel:
+            with gr.Row():
+                gr.Markdown("### ❓ 使用帮助")
+                main_help_close_btn = gr.Button("✖ 关闭", scale=0)
+            main_help_md = gr.Markdown(value="", elem_id="main-help-md")
 
         with gr.Row(elem_id="main-row"):
             # ---- 左栏（可折叠 + 独立滚动条） ----
             # 始终 visible=True，初始折叠由 INIT_JS 依据 sidebar-collapse-state 隐藏（Gradio
             # visible=False 的隐藏无法被前端 js 覆盖，会导致初始折叠后无法展开）
             with gr.Column(scale=1, min_width=200, visible=True, elem_id="sidebar-col"):
-                # 章节八十八 88.4：侧栏操作指引按钮
+                # 章节八十八 88.4：侧栏操作指引按钮（可关闭）
                 with gr.Row():
                     side_help_btn = gr.Button("❓ 侧栏说明", scale=1)
-                side_help_md = gr.Markdown(visible=False)
+                side_help_panel = gr.Row(elem_id="side-help-panel", visible=False)
+                with side_help_panel:
+                    side_help_close_btn = gr.Button("✖ 关闭", scale=0)
+                    side_help_md = gr.Markdown(value="", elem_id="side-help-md")
                 with gr.Accordion(i18n.t("角色"), open=False):
                     character_dropdown = gr.Dropdown(
                         choices=list_characters(), label=i18n.t("选择角色"), value=None
@@ -1653,9 +1672,23 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
         inputs=[cfg_tts_url, cfg_provider, cfg_base_url, cfg_api_key, cfg_model],
         outputs=[cfg_test_status],
     )
-    # 章节八十八 88.4：操作指引按钮
-    main_help_btn.click(fn=main_help_handler, outputs=[main_help_md])
-    side_help_btn.click(fn=side_help_handler, outputs=[side_help_md])
+    # 章节八十八 88.4：操作指引按钮（可关闭）
+    main_help_btn.click(
+        fn=main_help_handler,
+        outputs=[main_help_panel, main_help_md],
+    )
+    main_help_close_btn.click(
+        fn=close_main_help_handler,
+        outputs=[main_help_panel],
+    )
+    side_help_btn.click(
+        fn=side_help_handler,
+        outputs=[side_help_panel, side_help_md],
+    )
+    side_help_close_btn.click(
+        fn=close_side_help_handler,
+        outputs=[side_help_panel],
+    )
 
     export_btn.click(fn=export_session_handler, outputs=[export_file])
     import_btn.click(
@@ -1715,6 +1748,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    write_entry("startup_report", "应用进程启动", "OK", detail=f"args={vars(args)}")
     if args.debug:
         setup_logger("app", debug=True)
 
@@ -1742,6 +1776,9 @@ def _main_impl(args: argparse.Namespace) -> None:
     ok, msg = migration_mgr.run()
     if not ok:
         logger.error(f"数据迁移失败: {msg}")
+        write_entry("startup_report", "数据迁移", "FAIL", code="SYS-004", detail=msg)
+    else:
+        write_entry("startup_report", "数据迁移", "OK", detail=msg or "无需迁移")
 
     with gr.Blocks(
         title="LLM 角色扮演聊天",
@@ -1759,6 +1796,7 @@ def _main_impl(args: argparse.Namespace) -> None:
 
     port = args.port or find_available_port(config_mgr.get("app", {}).get("port", 7861))
     logger.info(f"启动端口: {port}")
+    write_entry("startup_report", "Gradio 启动", "OK", detail=f"端口 {port}")
     demo.launch(
         server_name="0.0.0.0",
         server_port=port,

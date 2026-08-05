@@ -12,6 +12,7 @@ from openai import OpenAI
 
 from modules.base_manager import BaseManager
 from modules.config_manager import decrypt_api_key
+from modules.error_codes import classify
 
 DEFAULT_TIMEOUT = 30
 
@@ -167,7 +168,7 @@ def call_llm_with_fallback(
             llm_logger = LLMClient(providers.get(session_provider) or {})
             llm_logger.log(
                 "warning",
-                f"会话级提供商 {session_provider!r} 不在已配置提供商列表 "
+                f"[LLM-006] 会话级提供商 {session_provider!r} 不在已配置提供商列表 "
                 f"{list(providers.keys())} 中，无可用提供商",
             )
     else:
@@ -183,13 +184,14 @@ def call_llm_with_fallback(
             provider_names = provider_names[:1]
 
     if not provider_names:
-        raise ValueError("没有可用的 LLM 提供商")
+        raise ValueError("[LLM-004] 没有可用的 LLM 提供商")
 
     last_error: Exception | None = None
     for name in provider_names:
         config = providers.get(name)
         if not config:
             continue
+        client = None
         try:
             client = LLMClient(config)
             client.log(
@@ -202,7 +204,11 @@ def call_llm_with_fallback(
             return text, name
         except Exception as e:
             last_error = e
-            client.log("warning", f"提供商 [{name}] 调用失败，尝试下一个: {str(e)[:300]}")
+            if client is not None:
+                client.log(
+                    "warning",
+                    f"[{classify(e)[0]}] 提供商 [{name}] 调用失败，尝试下一个: {str(e)[:300]}",
+                )
 
     if last_error is None:
         raise ValueError("没有可用的 LLM 提供商")

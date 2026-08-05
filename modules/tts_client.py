@@ -239,9 +239,10 @@ class TTSClient(BaseManager):
             requests.get(f"{self.base}/", timeout=min(10, self.timeout))
             return True
         except requests.ConnectionError:
+            self.log("warning", "[TTS-001] TTS API 离线（连接失败）")
             return False
         except Exception as e:
-            self.log("warning", f"TTS API 健康检查失败: {e}")
+            self.log("warning", f"[TTS-001] TTS API 健康检查失败: {e}")
             return False
 
     def set_refer_audio(
@@ -264,7 +265,7 @@ class TTSClient(BaseManager):
             self.log("debug", f"参考音频已设置: {ref_audio_path}")
             return True
         except Exception as e:
-            self.log("error", f"设置参考音频失败: {e}")
+            self.log("error", f"[TTS-005] 设置参考音频失败: {e}")
             return False
 
     def set_gpt_weights(self, weights_path: str) -> bool:
@@ -277,7 +278,7 @@ class TTSClient(BaseManager):
             self.log("debug", f"GPT 权重已设置: {weights_path}")
             return True
         except Exception as e:
-            self.log("error", f"设置 GPT 权重失败: {e}")
+            self.log("error", f"[TTS-006] 设置 GPT 权重失败: {e}")
             return False
 
     def set_sovits_weights(self, weights_path: str) -> bool:
@@ -290,7 +291,7 @@ class TTSClient(BaseManager):
             self.log("debug", f"SoVITS 权重已设置: {weights_path}")
             return True
         except Exception as e:
-            self.log("error", f"设置 SoVITS 权重失败: {e}")
+            self.log("error", f"[TTS-006] 设置 SoVITS 权重失败: {e}")
             return False
 
     # ---------- 语音合成 ----------
@@ -337,9 +338,12 @@ class TTSClient(BaseManager):
                 last_error = e
                 if attempt < 2:
                     delay = 1.0 * (2**attempt)
-                    self.log("warning", f"TTS 合成失败，{delay:.0f}s 后重试 ({attempt + 1}/3): {e}")
+                    self.log(
+                        "warning",
+                        f"[TTS-003] TTS 合成失败，{delay:.0f}s 后重试 " f"({attempt + 1}/3): {e}",
+                    )
                     time.sleep(delay)
-        raise RuntimeError(f"TTS 合成失败已达最大重试次数: {last_error}")
+        raise RuntimeError(f"[TTS-003] TTS 合成失败已达最大重试次数: {last_error}")
 
     def synthesize_long(self, text: str, text_language: str, params: dict | None = None) -> bytes:
         """长文本分片合成并拼接为完整 wav。"""

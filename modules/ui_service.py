@@ -4,11 +4,13 @@
 """
 
 import threading
+import time
 from pathlib import Path
 
 from modules.base_manager import BaseManager
 from modules.character_manager import CharManager
 from modules.conversation_manager import ConvManager
+from modules.error_codes import classify, format_error
 from modules.llm_client import LLMClient, call_llm_with_fallback
 from modules.lorebook_matcher import LorebookMatcher
 from modules.memory_store import (
@@ -17,6 +19,7 @@ from modules.memory_store import (
     split_summary_and_memories,
 )
 from modules.prompt_builder import build_messages
+from modules.reporter import write_entry
 from modules.tts_client import TTSClient
 
 # 章节八十七 87.2：TTS 合成超时预算（秒），超过则本次先回复文字
@@ -75,28 +78,49 @@ class UiService(BaseManager):
     # ---------- 对话流程（章节八） ----------
 
     def send_message(self, user_input: str, text_lang: str, voice_lang: str) -> dict:
-        """处理用户发送消息，返回 UI 更新所需的数据。"""
+        """处理用户发送消息，返回 UI 更新所需的数据。
+
+        章节九十：全程步骤级报告写入 run_report（文本 + JSONL 双份），
+        失败步骤带稳定错误码，并在返回 error 中带 [CODE]。
+        """
+        t_start = time.time()
+
+        def _rstep(step: str, status: str = "OK", detail: str = "", code: str = ""):
+            elapsed = f"{time.time() - t_start:.2f}s"
+            detail_txt = f"{detail}（{elapsed}）" if detail else f"耗时{elapsed}"
+            write_entry("run_report", step, status, detail_txt, code)
+            self.log(
+                "debug" if status == "OK" else "warning",
+                f"[run_report] {step} | {status}"
+                + (f" | [{code}]" if code else "")
+                + f" | {elapsed}",
+            )
+
         config = self.config_mgr
         max_len = config.get("app", {}).get("max_input_length", 2000)
         sensitive = config.get("app", {}).get("sensitive_words", [])
         text, warn = sanitize_input(user_input, max_len, sensitive)
         if warn:
-            return {"error": warn}
+            return {"error": f"[UI-001] {warn}"}
 
         # 0. 先校验角色（避免无角色时产生空会话/脏消息）
         character = (
             self.char_mgr.get_character(self.active_character) if self.active_character else None
         )
         if not character:
-            return {"error": "请先选择一个角色"}
+            return {"error": "[UI-002] 请先选择一个角色"}
+        _rstep("输入校验通过")
 
         if not self.active_session:
             self.active_session = self.conv_mgr.create_session(
                 self.active_character and f"{self.active_character}-1" or "新会话"
             )
+            _rstep("自动创建会话", detail=self.active_session)
+        _rstep("会话确认", detail=self.active_session)
 
         # 1. 保存用户消息
         self.conv_mgr.add_message(self.active_session, "user", text)
+        _rstep("保存用户消息", detail=f"{len(text)}字")
 
         # 1.5 记忆提取（章节八十四，规则提取）
         memory_cfg = config.get("memory", {})
@@ -110,9 +134,11 @@ class UiService(BaseManager):
                     key=mem_key,
                     source_session=self.active_session,
                 )
+            _rstep("记忆提取", detail=f"新增 {len(new_memories)} 条")
 
         # 2. 构建上下文
         summary, recent = self.conv_mgr.build_llm_context(self.active_session)
+        _rstep("构建上下文", detail=f"summary={len(summary)}字 recent={len(recent)}条")
 
         # 2.5 记忆召回（章节八十四）
         memory_entries = []
@@ -121,9 +147,11 @@ class UiService(BaseManager):
             memory_entries = self.memory_store.recall(
                 text, scope=mem_scope, key=mem_key, limit=memory_cfg.get("recall_limit", 5)
             )
+            _rstep("记忆召回", detail=f"{len(memory_entries)} 条")
 
         # 3. Lorebook 匹配
         lore_entries = self._match_lorebook(text)
+        _rstep("Lorebook 匹配", detail=f"{len(lore_entries)} 条")
 
         # 4. 角色配置（已在上方校验）
 
@@ -169,7 +197,9 @@ class UiService(BaseManager):
             # R4：回滚刚保存的用户消息，避免重发重复
             self.conv_mgr.remove_last_message(self.active_session, role="user")
             self.log("error", f"LLM 调用失败（已回滚用户消息）: {e}")
-            return {"error": f"LLM 调用失败: {e}"}
+            _rstep("LLM 调用", status="FAIL", code=classify(e)[0], detail=str(e)[:120])
+            return {"error": format_error(e, prefix="LLM 调用失败")}
+        _rstep("LLM 调用", detail=f"提供商={provider_name} 回复={len(reply)}字")
         self.log("info", f"LLM 调用成功: 提供商={provider_name} 回复长度={len(reply)}")
 
         # 6. 检查上下文长度 → 摘要压缩（extract_with_llm 时顺带提取记忆）
@@ -204,20 +234,32 @@ class UiService(BaseManager):
                     timeout=self._tts_timeout(),
                 )
                 if tts_timed_out:
-                    tts_notice = f"语音合成超时（>{self._tts_timeout():.0f}s），已先回复文字"
+                    tts_notice = "[TTS-004] 语音合成超时，已先回复文字"
+                    _rstep(
+                        "TTS 合成",
+                        status="WARN",
+                        code="TTS-004",
+                        detail=f"超时>{self._tts_timeout():.0f}s",
+                    )
                 elif audio_data is None:
-                    tts_notice = "TTS 合成失败，本次回复无语音"
+                    tts_notice = "[TTS-003] TTS 合成失败，本次回复无语音"
+                    _rstep("TTS 合成", status="WARN", code="TTS-003", detail="合成结果为空")
+                else:
+                    _rstep("TTS 合成", detail=f"{len(audio_data)} bytes")
             except Exception as e:
                 self.log("warning", f"TTS 合成失败（不影响文字）: {e}")
-                tts_notice = "TTS 合成失败，本次回复无语音"
+                tts_notice = f"{format_error(e, prefix='')}，本次回复无语音"
+                _rstep("TTS 合成", status="WARN", code=classify(e)[0], detail=str(e)[:120])
         else:
-            tts_notice = "TTS API 离线，本次回复无语音"
+            tts_notice = "[TTS-001] TTS API 离线，本次回复无语音"
+            _rstep("TTS 合成", status="WARN", code="TTS-001", detail="API 离线")
 
         # 8. 保存 AI 回复
         self.conv_mgr.add_message(self.active_session, "assistant", reply, audio_data)
 
         # 9. 更新音频路径
         self.last_audio_path = self._last_audio_file(self.active_session)
+        _rstep("保存 AI 回复", detail=f"总耗时{time.time() - t_start:.2f}s")
 
         return {
             "messages": self.conv_mgr.get_messages(self.active_session),
