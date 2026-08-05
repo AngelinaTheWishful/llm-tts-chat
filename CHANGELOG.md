@@ -2,6 +2,33 @@
 
 本文件记录所有已发布版本的应用变更。
 
+## [v1.2.0] - 2026-08-05
+
+### 新增
+
+- **一键启动（章节八十九）**：`go-llm-tts.bat` 改造为同时启动 TTS API 与 app：
+  - 自动探测同级 GPT-SoVITS 目录（含 `api_v2.py`）并校验 runtime Python
+  - 9880 已监听则跳过 TTS 启动，避免重复启动
+  - TTS API 与 app 各开一个独立窗口；TTS 未就绪时 app 仍启动（不阻塞，显示离线）
+  - 全部相对路径（`%~dp0`），与 GPT-SoVITS 目录保持同级即可
+  - 每步写入 `logs/startup_report_*.txt/.jsonl`，带 `STP-xxx` 错误码
+- **全系统错误码系统（章节九十）**：`modules/error_codes.py`
+  - 模块前缀 + 编号错误码（LLM-001/TTS-003/STP-004/CFG-006 等 40+ 码）
+  - `classify()` 将 openai/requests/业务异常归类为稳定错误码；不改变异常类型（兼容既有测试）
+  - WebUI 错误横幅/提示带 `[错误码]`，如 `[LLM-004] 没有可用的 LLM 提供商`
+- **按次运行报告（章节九十）**：`modules/reporter.py` + `report_cli.py`
+  - `startup_report`（一键启动/应用启动步骤）+ `run_report`（每次发送消息全流程步骤与耗时）
+  - 文本 `.txt` + JSON Lines `.jsonl` 双份，按天命名并保留 7 天
+  - 发送消息 12 个步骤（输入校验→角色→会话→记忆→上下文→Lorebook→LLM→摘要→TTS→保存）逐条记录，失败带错误码
+- **连通性测试与角色卡导入报错带码**：LLM/TTS 分项结果、导入失败等均显示 `[CODE]` 友好文案
+- **新增测试**：`test_error_codes.py`（14 项）+ `test_reporter.py`（5 项）；e2e 新增 B21 报告文件与错误码断言
+- **操作指引面板改进（章节八十八.4）**：主界面「使用帮助」宽度限制为侧栏宽度（`max-width` 跟随 `sidebar_width`，默认 320px），不再占满整行；主界面与侧栏帮助面板均新增「✖ 关闭」按钮
+
+### 修复
+
+- **修复 e2e 报告断言 bug**：B21 错误码匹配由子串比较改为正则 `\[(?:LLM|CFG|TTS|...)-\d+\]`
+- **`start /D` 目录含 `..\` 导致 api_v2.py 无法启动**：父目录用 `%~fI` 规范化，去除 `..\`（一键启动实测 TTS 就绪）
+
 ## [v1.1.9] - 2026-08-04
 
 ### 新增
