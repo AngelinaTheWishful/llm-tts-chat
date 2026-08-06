@@ -2,6 +2,13 @@
 
 本文件记录所有已发布版本的应用变更。
 
+## [v1.3.4] - 2026-08-06
+
+### 文档
+
+- **GitHub 账户改名**：在线仓库地址更新为 `github.com/AngelinatheMellowWish/llm-tts-chat` 与 `github.com/AngelinatheMellowWish/Object1687`（账户由 AngelinaTheWishful 改名）；README 三语/使用百科全书/全部开发记录中的仓库链接与 Git 身份同步更新
+- 三语 README 版本徽章统一至 v1.3.4
+
 ## [v1.3.3] - 2026-08-06
 
 ### 新增

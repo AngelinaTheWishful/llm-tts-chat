@@ -4,7 +4,7 @@
 
 Gradio ベースのロールプレイチャットアプリで、LLM（OpenAI 互換 API）と GPT-SoVITS 音声合成を統合しています。
 
-> **v1.3.2 リリース**（2026-08-06）· [GitHub Releases](https://github.com/AngelinaTheWishful/llm-tts-chat/releases)
+> **v1.3.4 リリース**（2026-08-06）· [GitHub Releases](https://github.com/AngelinatheMellowWish/llm-tts-chat/releases)
 
 ## 機能概要
 

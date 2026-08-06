@@ -4,7 +4,7 @@
 
 A Gradio-based roleplay chat application that integrates an LLM (OpenAI-compatible API) with GPT-SoVITS voice synthesis.
 
-> **v1.3.2 released** (2026-08-06) · [GitHub Releases](https://github.com/AngelinaTheWishful/llm-tts-chat/releases)
+> **v1.3.4 released** (2026-08-06) · [GitHub Releases](https://github.com/AngelinatheMellowWish/llm-tts-chat/releases)
 
 ## Features
 
