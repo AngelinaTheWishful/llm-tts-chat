@@ -361,7 +361,11 @@ def load_character_to_editor(character_name):
     """将角色配置载入编辑表单。"""
     char = char_mgr.get_character(character_name)
     if not char:
-        return [gr.update(value="") for _ in range(11)] + [gr.update(value=None)]
+        return (
+            [gr.update(value="") for _ in range(11)]
+            + [gr.update(value=None)]
+            + [gr.update(value=None)]
+        )
 
     sc = char.get("system_prompt_structured", {})
     lore = char.get("lorebook", {})
@@ -383,6 +387,7 @@ def load_character_to_editor(character_name):
         gr.update(value=char.get("chain_of_thought", "")),
         gr.update(value=format_lorebook_text(lore.get("entries", []))),
         gr.update(value=portrait),
+        gr.update(value=None),  # 训练音色：切换角色时重置，避免把上一角色的音色写入当前角色
     ]
 
 
@@ -1576,6 +1581,7 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
             editor_cot,
             editor_lorebook,
             editor_portrait,
+            editor_voice_dd,
         ],
     )
 

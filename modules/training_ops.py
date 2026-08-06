@@ -15,6 +15,7 @@
 - 全程记录 logs/app.log
 """
 
+import glob
 import re
 import shutil
 import time
@@ -260,9 +261,10 @@ class TrainingOps(BaseManager):
                     shutil.rmtree(target, ignore_errors=True)
                 else:
                     target.unlink(missing_ok=True)
-                cleaned += 1
             except OSError as e:
                 self.log("warning", f"清理失败 {p}: {e}")
+            if not target.exists():
+                cleaned += 1
         self.log("info", f"中间素材清理完成: {experiment}（{cleaned} 项）")
         return {"ok": True, "experiment": experiment, "cleaned": cleaned, "files": items}
 
@@ -286,7 +288,8 @@ class TrainingOps(BaseManager):
                     return {"ok": False, "error": f"归档含不安全路径: {n}"}
 
         # 实验名从 zip 文件名解析：<实验名>_YYYYMMDD_HHMMSS.zip
-        match = re.match(r"^(.*)_\d{8}_\d{6}$", zip_path.stem)
+        # 贪婪匹配末尾 15 位时间戳（YYYYMMDD_HHMMSS）；实验名自身以 _数字 结尾时也能正确剥离
+        match = re.match(r"^(.*)_(\d{8})_(\d{6})$", zip_path.stem)
         experiment = match.group(1) if match else zip_path.stem
 
         dest = self.restore_dir / experiment
@@ -326,7 +329,8 @@ class TrainingOps(BaseManager):
 
     def has_archive(self, experiment: str) -> bool:
         """判断实验是否存在对应归档 zip。"""
-        return bool(list(self.archive_dir.glob(f"{experiment}_*.zip")))
+        pattern = f"{glob.escape(experiment)}_*.zip"
+        return bool(list(self.archive_dir.glob(pattern)))
 
     def list_archives(self) -> list[dict]:
         """列出归档 zip 及大小。"""

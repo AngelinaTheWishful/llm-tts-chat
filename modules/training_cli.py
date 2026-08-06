@@ -23,9 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from modules.config_manager import ConfigManager  # noqa: E402
 from modules.training_ops import TrainingOps, format_size  # noqa: E402
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 def _build_ops(args) -> TrainingOps:
-    cfg = ConfigManager().get("gsv_training", {})
+    # 显式基于项目根加载 config.json，避免 CLI 从其他工作目录运行时丢失 gsv_training 配置
+    cfg = ConfigManager(_PROJECT_ROOT / "config.json").get("gsv_training", {})
     return TrainingOps(
         gsv_root=args.gsv_root or cfg.get("gsv_root", ""),
         archive_dir=args.archive_dir or cfg.get("archive_dir", ""),

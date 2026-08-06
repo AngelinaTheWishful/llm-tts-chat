@@ -8,5 +8,8 @@ if not exist "%VENV_PY%" (
     exit /b 1
 )
 
+pushd "%SCRIPT_DIR%"
 "%VENV_PY%" "%SCRIPT_DIR%modules\training_cli.py" %*
-pause
+set "CLI_RC=%ERRORLEVEL%"
+popd
+exit /b %CLI_RC%
