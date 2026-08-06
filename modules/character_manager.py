@@ -26,6 +26,10 @@ PORTRAIT_SIZE = (512, 512)
 THUMB_SIZE = (64, 64)
 DEFAULT_SANITIZE = "[^\\w\\u4e00-\\u9fff-]+"
 
+# 章节九十二：角色聊天背景（多格式含动图，≤200MB）
+BACKGROUND_EXTS = ("png", "jpg", "jpeg", "webp", "gif")
+BACKGROUND_MAX_MB = 200
+
 # 默认权重扫描目录（与 tts_client.GSV_SCAN_DIRS_* 保持一致，供无音色预设角色回退）
 _GSV_SCAN_DIRS_GPT = [
     "GPT_weights",
@@ -128,7 +132,30 @@ class CharManager(BaseManager):
         char["_ref_audio"] = self._resolve_file(char_dir, "ref.wav")
         char["_greeting_audio"] = self._resolve_file(char_dir, "greeting.wav")
         char["_voice_sample"] = self._resolve_file(char_dir, "voice_sample.wav")
+        char["_background"] = self._resolve_background(char_dir, char)
         return char
+
+    @staticmethod
+    def _resolve_background(char_dir: Path, char: dict) -> str:
+        """解析聊天背景（章节九十二）。
+
+        优先级：character.json `background` 字段 > 文件夹固定文件名
+        `background.{png,jpg,jpeg,webp,gif}`（按序取第一个存在）。
+        字段仅允许角色目录内的**纯文件名**（禁绝对路径 / `..` / 子目录），
+        不安全字段直接忽略并回落固定文件名（92.7 #8）。
+        """
+        field = str(char.get("background", "") or "").strip()
+        if field:
+            name = Path(field).name
+            if name == field and name not in (".", "..") and "/" not in field and "\\" not in field:
+                p = char_dir / field
+                if p.is_file():
+                    return str(p)
+        for ext in BACKGROUND_EXTS:
+            p = char_dir / f"background.{ext}"
+            if p.is_file():
+                return str(p)
+        return ""
 
     @staticmethod
     def _resolve_file(char_dir: Path, filename: str) -> str:
@@ -356,6 +383,30 @@ class CharManager(BaseManager):
         img_cropped.resize(THUMB_SIZE, Image.LANCZOS).save(thumb_path, "PNG")
 
         return {"main": str(main_path), "thumb": str(thumb_path)}
+
+    def update_background(self, name: str, upload_path: str) -> str:
+        """处理上传聊天背景（章节九十二）：校验 ≤200MB 与格式，保留原始格式（含动图）。
+
+        存入角色目录 `background.{ext}`，返回目标文件绝对路径。
+        """
+        char_dir = self.get_character_dir(name)
+        if not char_dir:
+            raise FileNotFoundError(f"角色不存在: {name}")
+
+        upload = Path(upload_path)
+        if not upload.is_file():
+            raise ValueError("上传文件不存在")
+        if upload.stat().st_size > BACKGROUND_MAX_MB * 1024 * 1024:
+            raise ValueError(f"背景图超过 {BACKGROUND_MAX_MB}MB 限制，请压缩后重试")
+
+        ext = upload.suffix.lstrip(".").lower()
+        if ext not in BACKGROUND_EXTS:
+            raise ValueError(f"不支持的背景图格式: {ext}（支持 {'/'.join(BACKGROUND_EXTS)}）")
+
+        target = char_dir / f"background.{ext}"
+        shutil.copyfile(upload, target)
+        self.log("info", f"角色背景已更新: {name} -> {target.name}")
+        return str(target)
 
     # ---------- 角色预设应用 ----------
 

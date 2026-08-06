@@ -5,7 +5,6 @@ Phase 4：左右分栏主界面 + 配置向导（条件可见性）。
 
 import argparse
 import ctypes
-import json
 import os
 import socket
 import sys
@@ -85,6 +84,31 @@ body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: no
 }}
 #main-help-panel .gradio-markdown {{ max-width: {_SIDEBAR_W}px; }}
 #side-help-panel {{ margin-bottom: 6px; }}
+/* 章节九十二：角色聊天背景（聊天主区域背景 + 遮罩） */
+#chat-bg-state {{ display: none !important; }}
+#chat-area {{
+    position: relative;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: cover;
+    overflow: hidden;
+}}
+#chat-area::before {{
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-color: var(--chat-overlay-color, #FFFFFF);
+    opacity: var(--chat-overlay-opacity, 0.4);
+    pointer-events: none;
+    z-index: 0;
+    display: none;
+}}
+#chat-area.chat-bg-on::before {{ display: block; }}
+#chat-area > * {{ position: relative; z-index: 1; }}
+/* 聊天容器背景透明，保证角色背景图透出（Gradio Chatbot 容器默认无背景色） */
+#chat-area .chatbot,
+#chat-area .chatbot-wrap,
+#chat-area .messages {{ background: transparent !important; }}
 /* 章节八十六：移动端/响应式适配 */
 @media (max-width: 900px) {{
     #top-row {{ flex-wrap: wrap; }}
@@ -103,8 +127,40 @@ body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: no
 
 # 章节八十五：侧栏拖动调整宽度初始化 JS（页面加载即注入）
 # 注意：Gradio 以 (${js})() 包装 js，必须为函数表达式而非 IIFE（分号会报错）
+# 章节九十二：增加聊天背景/遮罩应用函数（暴露到 window 供事件 js 调用）
 INIT_JS = """
-function init_sidebar_resizer() {
+function init_ui() {
+    // ---- 章节九十二：角色聊天背景 ----
+    function applyChatOverlay(enabled, opacity, mode, color) {
+        const area = document.getElementById('chat-area');
+        if (!area) return;
+        const on = area.classList.contains('chat-bg-on') && !!enabled;
+        const op = Math.max(0, Math.min(0.9, parseFloat(opacity) || 0));
+        area.style.setProperty('--chat-overlay-opacity', on ? String(op) : '0');
+        if (mode === 'custom' && color) {
+            area.style.setProperty('--chat-overlay-color', color);
+        } else {
+            area.style.removeProperty('--chat-overlay-color');
+        }
+    }
+    function applyChatBackground(path, enabled, opacity, mode, color) {
+        const area = document.getElementById('chat-area');
+        if (!area) return;
+        const p = (path || '').trim();
+        if (p && enabled) {
+            const url = '/file=' + encodeURI(p.replace(/\\\\/g, '/')) + '?ts=' + Date.now();
+            area.classList.add('chat-bg-on');
+            area.style.backgroundImage = "url('" + url + "')";
+        } else {
+            area.classList.remove('chat-bg-on');
+            area.style.backgroundImage = '';
+        }
+        applyChatOverlay(enabled, opacity, mode, color);
+    }
+    window.applyChatBackground = applyChatBackground;
+    window.applyChatOverlay = applyChatOverlay;
+
+    // ---- 章节八十五：侧栏拖动调整宽度 ----
     const MIN = 200, MAX = 600;
     const KEY = 'llm_tts_sidebar_width';
     function init() {
@@ -154,6 +210,10 @@ function init_sidebar_resizer() {
                 input.dispatchEvent(new Event('change', { bubbles: true }));
             }
         });
+        // 章节九十二：初始无角色背景，刷新后恢复主题背景（路径为空则清除）
+        const bgWrap = document.getElementById('chat-bg-state');
+        const bgInput = bgWrap ? bgWrap.querySelector('input, textarea') : null;
+        applyChatBackground(bgInput ? bgInput.value : '', false, 0, 'auto', '');
     }
     init();
 }
@@ -355,10 +415,45 @@ def switch_session_handler(session_id):
 
 
 def select_character_handler(name):
+    """切换角色（章节九十二）：返回 (状态文字, 聊天背景路径)。
+
+    角色有背景图时经 gr.set_static_paths 注册该单文件（仅暴露该图，不暴露
+    characters/ 整目录与 config.json），供前端 /file= 端点加载。
+    """
     result = ui_service.select_character(name)
     if "error" in result:
-        return gr.update(value=f"🔴 {result['error']}")
-    return gr.update(value=f"🟢 角色: {name} | TTS 参数已应用")
+        return gr.update(value=f"🔴 {result['error']}"), ""
+    bg = result.get("background", "") or ""
+    if bg:
+        try:
+            gr.set_static_paths([bg])
+        except Exception as e:
+            logger.warning(f"背景图静态注册失败: {bg}: {e}")
+    return gr.update(value=f"🟢 角色: {name} | TTS 参数已应用"), bg
+
+
+def save_chat_overlay_handler(enabled, opacity, mode, color):
+    """章节九十二：保存聊天背景遮罩设置（写入 theme_config.json，加锁）。
+
+    mode='auto' → color 存 null（自动随明暗主题）；'custom' → 存所选色值。
+    """
+    try:
+        ov = theme.config.setdefault("chat_overlay", {})
+        ov["enabled"] = bool(enabled)
+        ov["opacity"] = max(0.0, min(0.9, float(opacity or 0)))
+        ov["color"] = (color or "").strip() if mode == "custom" else None
+        theme.save()
+    except Exception as e:
+        logger.warning(f"聊天背景遮罩保存失败: {e}")
+        return gr.update(visible=True, value=f"🔴 遮罩设置保存失败: {e}")
+    return gr.update(visible=True, value="🟢 遮罩设置已保存")
+
+
+def preview_chat_bg_handler(file):
+    """章节九十二：编辑面板上传背景后即时预览（gr.File 保留动图原始格式）。"""
+    if not file:
+        return gr.update(value=None)
+    return gr.update(value=file)
 
 
 def refresh_characters_handler():
@@ -436,11 +531,14 @@ def load_character_to_editor(character_name):
             [gr.update(value="") for _ in range(11)]
             + [gr.update(value=None)]
             + [gr.update(value=None)]
+            + [gr.update(value=None)]
+            + [gr.update(value=None)]
         )
 
     sc = char.get("system_prompt_structured", {})
     lore = char.get("lorebook", {})
     portrait = char.get("_portrait", None) or None
+    background = char.get("_background", None) or None
 
     def lines_to_text(items):
         return "\n".join(items or [])
@@ -459,6 +557,8 @@ def load_character_to_editor(character_name):
         gr.update(value=format_lorebook_text(lore.get("entries", []))),
         gr.update(value=portrait),
         gr.update(value=None),  # 训练音色：切换角色时重置，避免把上一角色的音色写入当前角色
+        gr.update(value=background),  # 聊天背景预览（章节九十二）
+        gr.update(value=None),  # 聊天背景上传文件（不预填）
     ]
 
 
@@ -477,6 +577,7 @@ def save_character_handler(
     lorebook_text,
     portrait_path,
     training_voice,
+    background_upload,
 ):
     """保存角色编辑表单。"""
     name = (char_name or "").strip()
@@ -512,6 +613,14 @@ def save_character_handler(
             if restored["sovits"]:
                 rs["sovits_model"] = restored["sovits"]
 
+    # 章节九十二：聊天背景上传（gr.File 保留动图原始格式）
+    if background_upload:
+        try:
+            bg_name = Path(background_upload).name
+            character["background"] = bg_name
+        except Exception:
+            pass
+
     char_mgr.save_character(character)
 
     if portrait_path:
@@ -519,6 +628,13 @@ def save_character_handler(
             char_mgr.update_portrait(name, portrait_path)
         except Exception as e:
             logger.warning(f"头像更新失败: {e}")
+
+    if background_upload:
+        try:
+            char_mgr.update_background(name, background_upload)
+        except Exception as e:
+            logger.warning(f"聊天背景更新失败: {e}")
+            gr.Info(f"🟡 角色已保存，但背景更新失败: {e}")
 
     gr.Info(f"🟢 角色「{name}」已保存")
     return (
@@ -538,8 +654,7 @@ def save_language_handler(lang):
 def save_theme_handler(mode):
     cfg = theme.config
     cfg["mode"] = mode
-    theme_path = Path(__file__).resolve().parent / "theme_config.json"
-    theme_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    theme.save()
     return ""
 
 
@@ -1266,6 +1381,14 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                         label=i18n.t("Lorebook（关键词:内容 每行一条）"), lines=5
                     )
                     editor_portrait = gr.Image(label=i18n.t("上传头像"), type="filepath")
+                    editor_bg_upload = gr.File(
+                        label=i18n.t("上传聊天背景"),
+                        file_types=[".png", ".jpg", ".jpeg", ".webp", ".gif"],
+                        type="filepath",
+                    )
+                    editor_bg_preview = gr.Image(
+                        label=i18n.t("聊天背景预览"), type="filepath", interactive=False
+                    )
                     editor_voice_dd = gr.Dropdown(
                         choices=training_ops.list_restored(),
                         label=i18n.t("训练音色（已恢复）"),
@@ -1274,6 +1397,31 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                     )
                     editor_save_btn = gr.Button(i18n.t("保存角色"))
                     editor_status = gr.Markdown(visible=False)
+
+                # 章节九十二：聊天背景设置折叠栏（启用开关 + 遮罩透明度/配色，即时生效并持久化）
+                with gr.Accordion(i18n.t("聊天背景"), open=False):
+                    _ov_cfg = theme.overlay()
+                    chat_bg_enabled = gr.Checkbox(
+                        value=bool(_ov_cfg.get("enabled", True)),
+                        label=i18n.t("启用角色背景"),
+                    )
+                    chat_overlay_opacity = gr.Slider(
+                        0,
+                        0.9,
+                        value=float(_ov_cfg.get("opacity", 0.4)),
+                        step=0.05,
+                        label=i18n.t("遮罩透明度"),
+                    )
+                    chat_overlay_mode = gr.Dropdown(
+                        [("自动（随主题）", "auto"), ("自定义颜色", "custom")],
+                        value="custom" if _ov_cfg.get("color") else "auto",
+                        label=i18n.t("遮罩配色"),
+                    )
+                    chat_overlay_color = gr.ColorPicker(
+                        value=_ov_cfg.get("color") or "#000000",
+                        label=i18n.t("自定义遮罩色"),
+                    )
+                    chat_overlay_status = gr.Markdown(visible=False)
 
                 with gr.Accordion(i18n.t("会话"), open=False):
                     new_session_btn = gr.Button(i18n.t("新建会话"))
@@ -1517,9 +1665,16 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                 sidebar_collapse_state = gr.Number(
                     value=int(sidebar_initial_collapsed), elem_id="sidebar-collapse-state"
                 )
-                chatbot = gr.Chatbot(
-                    label=i18n.t("聊天"), type="tuples", render_markdown=True, height=CHAT_HEIGHT
-                )
+                # 章节九十二：聊天背景路径同步组件（隐藏，前端 JS 读取后经 /file= 加载）
+                chat_bg_state = gr.Textbox(elem_id="chat-bg-state")
+                # 章节九十二：聊天主区域（背景图 + 遮罩应用在此容器）
+                with gr.Column(elem_id="chat-area"):
+                    chatbot = gr.Chatbot(
+                        label=i18n.t("聊天"),
+                        type="tuples",
+                        render_markdown=True,
+                        height=CHAT_HEIGHT,
+                    )
                 audio_player = gr.Audio(label=i18n.t("语音回复"), type="filepath", visible=False)
                 with gr.Row():
                     fav_btn = gr.Button("⭐ 收藏最后一条回复")
@@ -1666,7 +1821,23 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
     character_dropdown.change(
         fn=select_character_handler,
         inputs=[character_dropdown],
-        outputs=[status_text],
+        outputs=[status_text, chat_bg_state],
+    )
+    # 章节九十二：背景路径更新后前端即时应用（不刷新页面）
+    chat_bg_state.change(
+        fn=None,
+        inputs=[
+            chat_bg_state,
+            chat_bg_enabled,
+            chat_overlay_opacity,
+            chat_overlay_mode,
+            chat_overlay_color,
+        ],
+        outputs=[],
+        js=(
+            "(p, enabled, opacity, mode, color) => "
+            "{ window.applyChatBackground(p, enabled, opacity, mode, color); }"
+        ),
     )
     character_dropdown.change(
         fn=load_character_to_editor,
@@ -1685,8 +1856,33 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
             editor_lorebook,
             editor_portrait,
             editor_voice_dd,
+            editor_bg_preview,
+            editor_bg_upload,
         ],
     )
+    # 章节九十二：编辑面板上传背景后即时预览
+    editor_bg_upload.change(
+        fn=preview_chat_bg_handler,
+        inputs=[editor_bg_upload],
+        outputs=[editor_bg_preview],
+    )
+    # 章节九十二：遮罩设置——前端即时应用 + 持久化
+    _overlay_inputs = [chat_bg_enabled, chat_overlay_opacity, chat_overlay_mode, chat_overlay_color]
+    for _ctrl in (chat_bg_enabled, chat_overlay_opacity, chat_overlay_mode, chat_overlay_color):
+        _ctrl.change(
+            fn=None,
+            inputs=_overlay_inputs,
+            outputs=[],
+            js=(
+                "(enabled, opacity, mode, color) => "
+                "{ window.applyChatOverlay(enabled, opacity, mode, color); }"
+            ),
+        )
+        _ctrl.change(
+            fn=save_chat_overlay_handler,
+            inputs=_overlay_inputs,
+            outputs=[chat_overlay_status],
+        )
 
     refresh_btn.click(
         fn=refresh_characters_handler,
@@ -1716,6 +1912,7 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
             editor_lorebook,
             editor_portrait,
             editor_voice_dd,
+            editor_bg_upload,
         ],
         outputs=[editor_status, character_dropdown],
     )

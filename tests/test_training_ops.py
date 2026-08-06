@@ -325,11 +325,13 @@ def test_load_character_to_editor_resets_training_voice(tmp_path, monkeypatch):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     import app
 
-    # 两种分支（角色存在/不存在）都必须返回 13 项，且末项（训练音色）为 None
+    # 两种分支（角色存在/不存在）都必须返回 15 项，且训练音色（索引 12）
+    # 与聊天背景上传（索引 14）为 None
     vals_none = app.load_character_to_editor("__不存在的角色__")
-    assert len(vals_none) == 13
+    assert len(vals_none) == 15
     assert vals_none[12]["value"] is None
 
     vals = app.load_character_to_editor("暴行")
-    assert len(vals) == 13
+    assert len(vals) == 15
     assert vals[12]["value"] is None
+    assert vals[13]["value"] is None or vals[13]["value"] == ""  # 背景预览可为 None/空

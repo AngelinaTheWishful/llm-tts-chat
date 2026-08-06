@@ -12,6 +12,7 @@ characters/*/portrait_thumb.png
 characters/*/ref.wav
 characters/*/greeting.wav
 characters/*/voice_sample.wav
+characters/*/background.*
 # 示例角色「暴行」的头像随包入库（用户确认作为内置示例角色）
 !characters/暴行/portrait.png
 !characters/暴行/portrait_thumb.png

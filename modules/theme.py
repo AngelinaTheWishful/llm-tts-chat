@@ -7,10 +7,21 @@
 """
 
 import json
+import threading
 from copy import deepcopy
 from pathlib import Path
 
 DEFAULT_THEME_PATH = Path(__file__).resolve().parent.parent / "theme_config.json"
+
+# 章节九十二：角色聊天背景遮罩（chat_overlay）默认配置
+DEFAULT_CHAT_OVERLAY = {
+    "enabled": True,
+    "opacity": 0.4,
+    "color": None,
+}
+
+# theme_config.json 写入锁：主题切换与「聊天背景」折叠栏共用，防并发丢更新（92.7 #3）
+THEME_WRITE_LOCK = threading.Lock()
 
 LIGHT_THEME = {
     "mode": "light",
@@ -68,13 +79,33 @@ class Theme:
             try:
                 user = json.loads(self.path.read_text(encoding="utf-8"))
                 base = deepcopy(DARK_THEME if user.get("mode") == "dark" else LIGHT_THEME)
-                return _deep_merge(base, user)
+                merged = _deep_merge(base, user)
             except (json.JSONDecodeError, OSError):
-                return deepcopy(LIGHT_THEME)
-        return deepcopy(LIGHT_THEME)
+                merged = deepcopy(LIGHT_THEME)
+        else:
+            merged = deepcopy(LIGHT_THEME)
+        # 章节九十二：chat_overlay 顶层节，与 custom 平级，缺失时补默认
+        overlay = deepcopy(DEFAULT_CHAT_OVERLAY)
+        if isinstance(merged.get("chat_overlay"), dict):
+            _deep_merge(overlay, merged["chat_overlay"])
+        merged["chat_overlay"] = overlay
+        return merged
 
     def reload(self) -> None:
         self.config = self.load()
+
+    def save(self, path: str | Path | None = None) -> None:
+        """写回 theme_config.json（加锁，92.7 #3）。"""
+        target = Path(path) if path else self.path
+        with THEME_WRITE_LOCK:
+            target.write_text(
+                json.dumps(self.config, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+    def overlay(self) -> dict:
+        """返回 chat_overlay 配置（遮罩/开关）。"""
+        return self.config.get("chat_overlay", deepcopy(DEFAULT_CHAT_OVERLAY))
 
     def to_css(self) -> str:
         """将主题配置转换为 CSS 字符串，注入 Gradio。
@@ -82,6 +113,8 @@ class Theme:
         - mode=light/dark：输出对应主题
         - mode=system（章节八十八 88.3）：浅色为默认，深色通过
           `@media (prefers-color-scheme: dark)` 自动跟随系统
+        - 章节九十二：注入遮罩 CSS 变量（--chat-overlay-color/--chat-overlay-opacity），
+          深色（含 system 深色）自动变深色遮罩，手动选色覆盖自动
         """
         mode = self.config.get("mode", "light")
         if mode == "system":
@@ -97,12 +130,30 @@ class Theme:
                     overrides[k] = v
             light = _deep_merge(base_light, deepcopy(overrides))
             dark = _deep_merge(base_dark, deepcopy(overrides))
-            css = self._build_theme_css(light)
-            css += self._build_system_dark_css(dark)
+            css = self._build_theme_css(light, overlay_color=self._overlay_color(False))
+            css += self._build_system_dark_css(dark, overlay_color=self._overlay_color(True))
             return css
-        return self._build_theme_css(self.config.get("custom", {}))
+        is_dark = mode == "dark"
+        return self._build_theme_css(
+            self.config.get("custom", {}), overlay_color=self._overlay_color(is_dark)
+        )
 
-    def _build_theme_css(self, c: dict) -> str:
+    def _overlay_color(self, dark: bool) -> str:
+        """遮罩颜色：手动选色优先，否则自动随明暗（浅白/深黑）。"""
+        ov = self.config.get("chat_overlay", {})
+        manual = ov.get("color")
+        if manual:
+            return manual
+        return "#000000" if dark else "#FFFFFF"
+
+    def _overlay_opacity(self) -> str:
+        ov = self.config.get("chat_overlay", {})
+        try:
+            return str(max(0.0, min(0.9, float(ov.get("opacity", 0.4)))))
+        except (TypeError, ValueError):
+            return "0.4"
+
+    def _build_theme_css(self, c: dict, overlay_color: str = "#FFFFFF") -> str:
         bg = c.get("chat_background", {}).get("value", "#F0F0F0")
         css = f"""
         :root {{
@@ -114,6 +165,8 @@ class Theme:
             --timestamp-color: {c.get('timestamp_color', '#999999')};
             --font-size: {c.get('font_size', '14px')};
             --border-radius: {c.get('border_radius', '18px')};
+            --chat-overlay-color: {overlay_color};
+            --chat-overlay-opacity: {self._overlay_opacity()};
         }}
         body {{
             background-color: var(--bg-color);
@@ -135,7 +188,7 @@ class Theme:
             css += f"\n{custom_css}"
         return css
 
-    def _build_system_dark_css(self, c: dict) -> str:
+    def _build_system_dark_css(self, c: dict, overlay_color: str = "#000000") -> str:
         """主题跟随系统：深色覆盖（prefers-color-scheme: dark）。"""
         bg = c.get("chat_background", {}).get("value", "#262626")
         return f"""
@@ -147,6 +200,7 @@ class Theme:
                 --ai-bubble: {c.get('ai_bubble_color', '#2D2D2D')};
                 --text-color: {c.get('text_color', '#E0E0E0')};
                 --timestamp-color: {c.get('timestamp_color', '#888888')};
+                --chat-overlay-color: {overlay_color};
             }}
             body {{
                 background-color: var(--bg-color);

@@ -305,8 +305,9 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
     if has("select_character_handler"):
         try:
             r = call("select_character_handler", "暴行", timeout=30)
-            val = r["value"] if isinstance(r, dict) else str(r)
-            check("B4 角色切换（暴行）", "角色: 暴行" in str(val), str(val))
+            flat = flatten_updates(r)
+            status = flat[0].get("value", "") if flat else str(r)
+            check("B4 角色切换（暴行）", "角色: 暴行" in str(status), str(status)[:40])
         except Exception as e:
             check("B4 角色切换（暴行）", False, str(e))
     else:
@@ -611,6 +612,7 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
                 "",
                 None,
                 None,
+                None,  # background_upload（章节九十二）
                 timeout=30,
             )
             flat = flatten_updates(r)
@@ -620,6 +622,50 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
             check("B22 角色保存-空名称不报错", False, str(e))
     else:
         check("B22 角色保存-空名称不报错", False, "端点缺失")
+
+    # B23 章节九十二：角色聊天背景——背景路径返回/遮罩保存/背景文件经 /file= 加载
+    if has("select_character_handler") and has("save_chat_overlay_handler"):
+        try:
+            # 写入 1x1 透明 PNG 作为角色背景，验证静态注册与 /file= 加载
+            import base64
+
+            bg_dir = work / "characters" / "暴行"
+            bg_dir.mkdir(parents=True, exist_ok=True)
+            one_px = base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            )
+            (bg_dir / "background.png").write_bytes(one_px)
+            r = call("select_character_handler", "暴行", timeout=30)
+            flat = flatten_updates(r)
+            bg_path = ""
+            # 输出[1]（chat_bg_state Textbox）可能以原始 string 返回（非 update dict）
+            if isinstance(r, (list, tuple)) and len(r) >= 2:
+                item = r[1]
+                if isinstance(item, dict):
+                    bg_path = str(item.get("value", "") or "")
+                else:
+                    bg_path = str(item or "")
+            check("B23a 角色切换返回背景路径", bg_path.endswith("background.png"), f"bg={bg_path}")
+            # 遮罩设置持久化（auto 模式 → color 应存 null）
+            r2 = call("save_chat_overlay_handler", True, 0.5, "auto", "#000000", timeout=30)
+            flat2 = flatten_updates(r2)
+            val2 = "".join(str(u) for u in flat2)
+            check("B23b 遮罩设置保存", "已保存" in val2, val2[:40])
+            # 背景静态注册后 /file= 可访问
+            if bg_path:
+                import urllib.request
+                from urllib import parse as urlparse
+
+                url = base + "/file=" + urlparse.quote(bg_path.replace("\\", "/"))
+                with urllib.request.urlopen(url, timeout=15) as resp:
+                    ok_serve = resp.status == 200
+                check("B23c 背景图经 /file= 加载", ok_serve, f"status={resp.status}")
+            else:
+                check("B23c 背景图经 /file= 加载", False, "未获取到背景路径")
+        except Exception as e:
+            check("B23 角色聊天背景", False, str(e))
+    else:
+        check("B23 角色聊天背景", False, "端点缺失")
 
 
 def run_server_checks():

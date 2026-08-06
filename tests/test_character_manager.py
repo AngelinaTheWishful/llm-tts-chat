@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from modules.character_manager import CharManager
@@ -281,3 +283,83 @@ def test_experiment_name_parsing():
 
     assert CharManager._experiment_name("GPT_weights_v2Pro/EXP01-e10.ckpt") == "EXP01"
     assert CharManager._experiment_name("EXP01") == "EXP01"
+
+
+# ---------- 章节九十二：角色聊天背景 ----------
+
+
+def test_background_fixed_filename(tmp_path):
+    char_dir = make_char_dir(tmp_path, "背景A")
+    (char_dir / "background.png").write_bytes(b"\x89PNG fake")
+    mgr = CharManager(tmp_path)
+    char = mgr.get_character("背景A")
+    assert char["_background"].endswith("background.png")
+
+
+def test_background_field_priority_over_fixed(tmp_path):
+    char_dir = make_char_dir(tmp_path, "背景B")
+    (char_dir / "background.png").write_bytes(b"\x89PNG fixed")
+    (char_dir / "bg_custom.jpg").write_bytes(b"JPG custom")
+    jp = char_dir / "character.json"
+    char = json.loads(jp.read_text(encoding="utf-8"))
+    char["background"] = "bg_custom.jpg"
+    jp.write_text(json.dumps(char, ensure_ascii=False), encoding="utf-8")
+    mgr = CharManager(tmp_path)
+    assert mgr.get_character("背景B")["_background"].endswith("bg_custom.jpg")
+
+
+def test_background_ext_priority_order(tmp_path):
+    char_dir = make_char_dir(tmp_path, "背景C")
+    (char_dir / "background.gif").write_bytes(b"GIF89a")
+    (char_dir / "background.png").write_bytes(b"\x89PNG")
+    mgr = CharManager(tmp_path)
+    # png 优先于 gif（按 png→jpg→jpeg→webp→gif 顺序）
+    assert mgr.get_character("背景C")["_background"].endswith("background.png")
+
+
+def test_background_unsafe_field_falls_back(tmp_path):
+    char_dir = make_char_dir(tmp_path, "背景D")
+    (char_dir / "background.webp").write_bytes(b"WEBP")
+    jp = char_dir / "character.json"
+    char = json.loads(jp.read_text(encoding="utf-8"))
+    char["background"] = "../../config.json"
+    jp.write_text(json.dumps(char, ensure_ascii=False), encoding="utf-8")
+    mgr = CharManager(tmp_path)
+    # 不安全路径字段被忽略，回落固定文件名
+    assert mgr.get_character("背景D")["_background"].endswith("background.webp")
+
+
+def test_background_missing_returns_empty(tmp_path):
+    mgr = CharManager(tmp_path)
+    assert mgr.get_character("不存在") is None
+
+
+def test_update_background_valid(tmp_path):
+    make_char_dir(tmp_path, "背景E")
+    src = tmp_path / "upload.gif"
+    src.write_bytes(b"GIF89a animated")
+    mgr = CharManager(tmp_path)
+    target = mgr.update_background("背景E", str(src))
+    assert target.endswith("background.gif")
+    assert Path(target).read_bytes() == b"GIF89a animated"
+
+
+def test_update_background_too_large(tmp_path):
+    make_char_dir(tmp_path, "背景F")
+    src = tmp_path / "big.png"
+    src.write_bytes(b"\x00" * (201 * 1024 * 1024))
+    mgr = CharManager(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="200MB"):
+            mgr.update_background("背景F", str(src))
+    finally:
+        src.unlink(missing_ok=True)
+
+
+def test_update_background_bad_format(tmp_path):
+    make_char_dir(tmp_path, "背景G")
+    src = tmp_path / "bad.txt"
+    src.write_text("not image", encoding="utf-8")
+    mgr = CharManager(tmp_path)
+    with pytest.raises(ValueError, match="不支持"):
+        mgr.update_background("背景G", str(src))
