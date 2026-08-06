@@ -85,8 +85,20 @@ class Theme:
         """
         mode = self.config.get("mode", "light")
         if mode == "system":
-            css = self._build_theme_css(LIGHT_THEME["custom"])
-            css += self._build_system_dark_css(DARK_THEME["custom"])
+            # Q3：跟随系统时保留用户自定义色。
+            # 仅将"用户显式声明的 custom 键"（相对基色的差异）叠加到深浅两套基色，
+            # 避免把整套浅色默认值覆盖到深色配色上。
+            base_light = deepcopy(LIGHT_THEME["custom"])
+            base_dark = deepcopy(DARK_THEME["custom"])
+            user_custom = self.config.get("custom", {})
+            overrides = {}
+            for k, v in user_custom.items():
+                if v != base_light.get(k):
+                    overrides[k] = v
+            light = _deep_merge(base_light, deepcopy(overrides))
+            dark = _deep_merge(base_dark, deepcopy(overrides))
+            css = self._build_theme_css(light)
+            css += self._build_system_dark_css(dark)
             return css
         return self._build_theme_css(self.config.get("custom", {}))
 

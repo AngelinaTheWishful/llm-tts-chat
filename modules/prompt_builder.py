@@ -14,6 +14,17 @@ def build_system_prompt(
     memory_entries: list[str] | None = None,
 ) -> str:
     """按结构化分段构建 system prompt。"""
+
+    def _as_list(value) -> list[str]:
+        # 兼容用户手改 character.json 导致的非列表字段（None/字符串等），避免 join 崩溃
+        if not value:
+            return []
+        if isinstance(value, list):
+            return [str(v) for v in value if v]
+        if isinstance(value, str):
+            return [value]
+        return [str(value)]
+
     sc = character.get("system_prompt_structured", {})
     name = character.get("name", "角色")
 
@@ -24,18 +35,18 @@ def build_system_prompt(
     if sc.get("speaking_style"):
         parts.append(f"[说话风格] {sc['speaking_style']}")
     if sc.get("speech_quirks"):
-        quirks = "；".join(sc["speech_quirks"])
+        quirks = "；".join(_as_list(sc["speech_quirks"]))
         parts.append(f"[口癖] {quirks}")
     if sc.get("background"):
         parts.append(f"[背景] {sc['background']}")
 
-    likes = "、".join(sc.get("likes", []))
-    dislikes = "、".join(sc.get("dislikes", []))
+    likes = "、".join(_as_list(sc.get("likes")))
+    dislikes = "、".join(_as_list(sc.get("dislikes")))
     if likes or dislikes:
         parts.append(f"[喜好] 喜欢：{likes}；不喜欢：{dislikes}")
 
     if sc.get("behavior_rules"):
-        rules = "；".join(sc["behavior_rules"])
+        rules = "；".join(_as_list(sc["behavior_rules"]))
         parts.append(f"[行为准则] {rules}")
 
     if character.get("chain_of_thought"):

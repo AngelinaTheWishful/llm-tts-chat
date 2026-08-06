@@ -233,10 +233,14 @@ class TTSClient(BaseManager):
         """检查 GPT-SoVITS API 是否存活。
 
         api_v2.py 无独立健康接口，/control 需 command 参数。
-        以"服务器是否有任何 HTTP 响应"作为存活判据（404 即服务在线）。
+        存活判据：服务器返回 < 500 的任意 HTTP 响应（404 即服务在线）；
+        5xx（服务器错误）视为服务异常而非在线。
         """
         try:
-            requests.get(f"{self.base}/", timeout=min(10, self.timeout))
+            resp = requests.get(f"{self.base}/", timeout=min(10, self.timeout))
+            if resp.status_code >= 500:
+                self.log("warning", f"[TTS-001] TTS API 服务异常（HTTP {resp.status_code}）")
+                return False
             return True
         except requests.ConnectionError:
             self.log("warning", "[TTS-001] TTS API 离线（连接失败）")

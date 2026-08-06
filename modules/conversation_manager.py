@@ -305,6 +305,55 @@ class ConvManager(BaseManager):
             self.log("debug", f"已删除消息（回滚）: {session_id} role={role}")
             return removed
 
+    def find_message_index(self, session_id: str, msg_id: str) -> int:
+        """按 msg_id 查找消息下标，未找到返回 -1。"""
+        messages = self.get_messages(session_id)
+        for i, m in enumerate(messages):
+            if m.get("msg_id") == msg_id:
+                return i
+        return -1
+
+    def edit_message(
+        self, session_id: str, msg_id: str, new_content: str, prepend_versions: list | None = None
+    ) -> dict | None:
+        """编辑指定消息内容（Q9）。原内容保留在 edited_from，便于追溯。
+
+        prepend_versions：可选，将历史版本前置到 edited_from（重新生成时记录旧回复）。
+        msg_id 为空时编辑最后一条消息（兼容导入会话无 msg_id 的情况）。
+        """
+        with self._lock:
+            sdir = self.dir / session_id
+            if not sdir.exists():
+                return None
+            messages = self._read_messages(sdir)
+            if not messages:
+                return None
+            # 无 msg_id（如导入会话）时定位最后一条消息
+            targets = [m for m in messages if m.get("msg_id") == msg_id] if msg_id else []
+            if not targets and not msg_id:
+                targets = [messages[-1]]
+            if not targets:
+                return None
+            m = targets[0]
+            if not m.get("msg_id"):
+                m["msg_id"] = uuid.uuid4().hex[:12]
+            original = m.get("content", "")
+            versions = list(prepend_versions or [])
+            if original != new_content:
+                if original not in versions:
+                    versions.append(original)
+                m["content"] = new_content
+                m["edited_at"] = datetime.now().isoformat(timespec="seconds")
+            # 即使内容未变，也记录前置版本（重新生成时旧回复）
+            if versions:
+                m["edited_from"] = versions + m.get("edited_from", [])
+                self._write_json(sdir / "messages.json", messages)
+                self._messages_cache[session_id] = messages
+                self._write_text(sdir / "updated_at.txt", _now_stamp())
+                self._invalidate_meta(session_id)
+            self.log("info", f"消息已编辑: {session_id} msg_id={msg_id}")
+            return m
+
     # ---------- 上下文构建 / 摘要 ----------
 
     def build_llm_context(self, session_id: str) -> tuple[str, list[dict]]:
@@ -349,6 +398,10 @@ class ConvManager(BaseManager):
                 history_for_summary = source
 
             new_summary = summarize_fn(history_for_summary)
+            if not new_summary or not new_summary.strip():
+                # 摘要为空（如 LLM 静默失败）时不截断历史，避免数据永久丢失
+                self.log("warning", f"摘要结果为空，跳过压缩: {session_id}")
+                return ""
             self._write_text(sdir / "summary.txt", new_summary)
 
             # 仅保留最近 N 轮，其余压缩进摘要
@@ -513,7 +566,7 @@ class ConvManager(BaseManager):
         if filters.get("date_from"):
             results = [r for r in results if r.get("timestamp", "") >= filters["date_from"]]
         if filters.get("role"):
-            results = [r for r in results if r["session_name"] == filters["role"]]
+            results = [r for r in results if r.get("role") == filters["role"]]
 
         return sorted(results, key=lambda x: x.get("timestamp", ""), reverse=True)
 
@@ -595,17 +648,37 @@ class ConvManager(BaseManager):
             (sdir / "audio").mkdir(exist_ok=True)
 
             with zipfile.ZipFile(zip_path, "r") as zf:
-                for member in zf.namelist():
-                    member_path = Path(member)
+                info_list = zf.infolist()
+                # zip 炸弹防护：成员数 / 总解压大小 / 单文件大小上限
+                if len(info_list) > 1000:
+                    self.log("error", f"导入的会话 zip 成员数超限: {zip_path}")
+                    shutil.rmtree(str(sdir), ignore_errors=True)
+                    return None
+                if sum(i.file_size for i in info_list) > 500 * 1024 * 1024:
+                    self.log("error", f"导入的会话 zip 解压总大小超限: {zip_path}")
+                    shutil.rmtree(str(sdir), ignore_errors=True)
+                    return None
+                if any(i.file_size > 100 * 1024 * 1024 for i in info_list):
+                    self.log("error", f"导入的会话 zip 存在超大单文件: {zip_path}")
+                    shutil.rmtree(str(sdir), ignore_errors=True)
+                    return None
+                for info in info_list:
+                    member_path = Path(info.filename)
                     # 路径穿越防护
-                    if member_path.is_absolute() or ".." in member_path.parts:
-                        self.log("warning", f"跳过不安全路径: {member}")
+                    if info.is_dir() or member_path.is_absolute() or ".." in member_path.parts:
+                        self.log("warning", f"跳过不安全路径: {info.filename}")
                         continue
                     target = (sdir / member_path).resolve()
                     if not str(target).startswith(str(sdir.resolve())):
-                        self.log("warning", f"跳过越界路径: {member}")
+                        self.log("warning", f"跳过越界路径: {info.filename}")
                         continue
-                    zf.extract(member, sdir)
+                    try:
+                        zf.extract(info, sdir)
+                    except Exception as e:  # noqa: BLE001
+                        # 解压异常（坏 CRC / 非法文件名 / 权限）→ 清理残留，避免幽灵会话
+                        self.log("error", f"导入会话解压失败（已清理）: {info.filename}: {e}")
+                        shutil.rmtree(str(sdir), ignore_errors=True)
+                        return None
 
             messages_file = sdir / "messages.json"
             if not messages_file.exists():
@@ -616,6 +689,12 @@ class ConvManager(BaseManager):
                 messages = json.loads(messages_file.read_text(encoding="utf-8"))
                 if not isinstance(messages, list):
                     raise ValueError("messages.json 不是数组")
+                # 结构校验：每条消息必须为 dict 且含 role/content 字段
+                for m in messages:
+                    if not isinstance(m, dict):
+                        raise ValueError("messages.json 存在非法消息结构")
+                    if not isinstance(m.get("role"), str) or not isinstance(m.get("content"), str):
+                        raise ValueError("messages.json 存在非法消息结构")
             except (json.JSONDecodeError, ValueError):
                 self.log("error", f"导入的会话 messages.json 格式无效: {zip_path}")
                 shutil.rmtree(str(sdir), ignore_errors=True)

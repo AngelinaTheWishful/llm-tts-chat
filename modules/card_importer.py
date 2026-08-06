@@ -113,10 +113,14 @@ def parse_cards(path) -> tuple[list[dict], bytes | None, list[str]]:
     Returns:
         (角色卡 dict 列表, PNG 头像字节|None, 警告列表)
     """
+    p = Path(path)
+    # Q11：单文件大小限制（≤50MB，用户选定），防止超大文件耗尽内存
+    if p.is_file() and p.stat().st_size > 50 * 1024 * 1024:
+        raise ValueError("角色卡文件超过 50MB 限制，拒绝导入")
+
     fmt = detect_card_format(path)
     if not fmt:
         raise ValueError("无法识别角色卡格式（支持 TavernAI PNG/JSON、RisuAI、Chub、CAI）")
-    p = Path(path)
 
     if fmt == FORMAT_TAVERN_PNG:
         raw = p.read_bytes()

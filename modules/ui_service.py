@@ -111,15 +111,18 @@ class UiService(BaseManager):
             return {"error": "[UI-002] 请先选择一个角色"}
         _rstep("输入校验通过")
 
-        if not self.active_session:
-            self.active_session = self.conv_mgr.create_session(
+        # Q10：捕获会话快照，全程使用局部变量，避免并发发送/切换会话时写错会话
+        session_id = self.active_session
+        if not session_id:
+            session_id = self.conv_mgr.create_session(
                 self.active_character and f"{self.active_character}-1" or "新会话"
             )
-            _rstep("自动创建会话", detail=self.active_session)
-        _rstep("会话确认", detail=self.active_session)
+            self.active_session = session_id
+            _rstep("自动创建会话", detail=session_id)
+        _rstep("会话确认", detail=session_id)
 
         # 1. 保存用户消息
-        self.conv_mgr.add_message(self.active_session, "user", text)
+        self.conv_mgr.add_message(session_id, "user", text)
         _rstep("保存用户消息", detail=f"{len(text)}字")
 
         # 1.5 记忆提取（章节八十四，规则提取）
@@ -132,12 +135,12 @@ class UiService(BaseManager):
                     new_memories,
                     scope=mem_scope,
                     key=mem_key,
-                    source_session=self.active_session,
+                    source_session=session_id,
                 )
             _rstep("记忆提取", detail=f"新增 {len(new_memories)} 条")
 
         # 2. 构建上下文
-        summary, recent = self.conv_mgr.build_llm_context(self.active_session)
+        summary, recent = self.conv_mgr.build_llm_context(session_id)
         _rstep("构建上下文", detail=f"summary={len(summary)}字 recent={len(recent)}条")
 
         # 2.5 记忆召回（章节八十四）
@@ -170,13 +173,13 @@ class UiService(BaseManager):
         # 5. LLM 调用（多提供商故障转移 + 会话级提供商覆盖 R12）
         providers = config.get("llm_providers", {})
         llm_cfg = config.get("llm", {})
-        session_provider = self.get_session_provider(self.active_session)
+        session_provider = self.get_session_provider(session_id)
         self.log(
             "debug",
             f"LLM 发送准备: 提供商数量={len(providers)} 名称={list(providers.keys())} "
             f"active_provider={llm_cfg.get('active_provider', '')} "
             f"session_provider={session_provider or '跟随全局'} "
-            f"会话={self.active_session}",
+            f"会话={session_id}",
         )
         if not providers:
             self.log(
@@ -195,7 +198,7 @@ class UiService(BaseManager):
             )
         except Exception as e:
             # R4：回滚刚保存的用户消息，避免重发重复
-            self.conv_mgr.remove_last_message(self.active_session, role="user")
+            self.conv_mgr.remove_last_message(session_id, role="user")
             self.log("error", f"LLM 调用失败（已回滚用户消息）: {e}")
             _rstep("LLM 调用", status="FAIL", code=classify(e)[0], detail=str(e)[:120])
             return {"error": format_error(e, prefix="LLM 调用失败")}
@@ -203,16 +206,18 @@ class UiService(BaseManager):
         self.log("info", f"LLM 调用成功: 提供商={provider_name} 回复长度={len(reply)}")
 
         # 6. 检查上下文长度 → 摘要压缩（extract_with_llm 时顺带提取记忆）
-        self.conv_mgr.maybe_summarize(
-            self.active_session, summarize_fn=self._summarize_with_provider
-        )
+        try:
+            self.conv_mgr.maybe_summarize(session_id, summarize_fn=self._summarize_with_provider)
+        except Exception as e:
+            self.log("warning", f"摘要压缩失败（不阻断回复）: {e}")
+            _rstep("摘要压缩", status="WARN", code=classify(e)[0], detail=str(e)[:120])
         if memory_cfg.get("enabled", True) and self._pending_memories:
             mem_scope, mem_key = self._memory_scope_key()
             self.memory_store.add_memories(
                 self._pending_memories,
                 scope=mem_scope,
                 key=mem_key,
-                source_session=self.active_session,
+                source_session=session_id,
             )
             self._pending_memories = []
 
@@ -255,18 +260,154 @@ class UiService(BaseManager):
             _rstep("TTS 合成", status="WARN", code="TTS-001", detail="API 离线")
 
         # 8. 保存 AI 回复
-        self.conv_mgr.add_message(self.active_session, "assistant", reply, audio_data)
+        self.conv_mgr.add_message(session_id, "assistant", reply, audio_data)
 
         # 9. 更新音频路径
-        self.last_audio_path = self._last_audio_file(self.active_session)
+        self.last_audio_path = self._last_audio_file(session_id)
         _rstep("保存 AI 回复", detail=f"总耗时{time.time() - t_start:.2f}s")
 
         return {
-            "messages": self.conv_mgr.get_messages(self.active_session),
+            "messages": self.conv_mgr.get_messages(session_id),
             "audio_path": self.last_audio_path,
             "provider": provider_name,
-            "session_id": self.active_session,
-            "session_name": self._session_name(self.active_session),
+            "session_id": session_id,
+            "session_name": self._session_name(session_id),
+            "tts_notice": tts_notice,
+        }
+
+    def regenerate_last_reply(self, text_lang: str = "中文", voice_lang: str = "中文") -> dict:
+        """重新生成最后一条 AI 回复（Q7）。
+
+        - 删除最后一条 assistant 消息（含音频），基于最后一条 user 消息重新调用 LLM+TTS
+        - 旧回复写入新回复的 edited_from 版本记录，便于追溯
+        """
+        t_start = time.time()
+        session_id = self.active_session
+        if not session_id:
+            return {"error": "[UI-002] 尚无会话可重新生成"}
+        messages = self.conv_mgr.get_messages(session_id)
+        if not messages or messages[-1].get("role") != "assistant":
+            return {"error": "[UI-003] 最后一条消息不是 AI 回复，无法重新生成"}
+        if not any(m.get("role") == "user" for m in messages):
+            return {"error": "[UI-003] 会话中无用户消息，无法重新生成"}
+
+        # 移除旧 assistant 回复（保留文本与音频字节到恢复用）
+        old = messages[-1]
+        old_audio_path = old.get("audio_file") or ""
+        old_audio_bytes = None
+        if old_audio_path:
+            try:
+                old_audio_path_abs = self.conv_mgr.dir / session_id / old_audio_path
+                if old_audio_path_abs.is_file():
+                    old_audio_bytes = old_audio_path_abs.read_bytes()
+            except OSError:
+                old_audio_bytes = None
+        self.conv_mgr.remove_last_message(session_id, role="assistant")
+
+        # 基于最后一条 user 消息重新生成
+        last_user = next(
+            (m for m in reversed(self.conv_mgr.get_messages(session_id)) if m["role"] == "user"),
+            None,
+        )
+        if last_user is None:
+            return {"error": "[UI-003] 未找到用户消息"}
+
+        config = self.config_mgr
+        character = (
+            self.char_mgr.get_character(self.active_character) if self.active_character else None
+        )
+        if not character:
+            return {"error": "[UI-002] 请先选择一个角色"}
+
+        summary, recent = self.conv_mgr.build_llm_context(session_id)
+        memory_entries = []
+        memory_cfg = config.get("memory", {})
+        if memory_cfg.get("enabled", True):
+            mem_scope, mem_key = self._memory_scope_key()
+            memory_entries = self.memory_store.recall(
+                last_user["content"],
+                scope=mem_scope,
+                key=mem_key,
+                limit=memory_cfg.get("recall_limit", 5),
+            )
+        lore_entries = self._match_lorebook(last_user["content"])
+        protection_mode = config.get("prompt_protection", {}).get("mode", "A")
+        msgs = build_messages(
+            character,
+            lore_entries,
+            summary,
+            recent,
+            last_user["content"],
+            text_lang,
+            protection_mode=protection_mode,
+            memory_entries=memory_entries,
+        )
+
+        providers = config.get("llm_providers", {})
+        llm_cfg = config.get("llm", {})
+        session_provider = self.get_session_provider(session_id)
+        try:
+            reply, provider_name = call_llm_with_fallback(
+                providers,
+                llm_cfg.get("active_provider", ""),
+                llm_cfg.get("fallback_enabled", True),
+                msgs[0]["content"],
+                msgs[1:],
+                session_provider=session_provider,
+            )
+        except Exception as e:
+            # 恢复旧回复（含音频），避免数据丢失
+            self.conv_mgr.add_message(
+                session_id, "assistant", old.get("content", ""), old_audio_bytes
+            )
+            self.log("error", f"重新生成失败（已恢复旧回复）: {e}")
+            return {"error": format_error(e, prefix="重新生成失败")}
+
+        # TTS 合成（超时/失败不阻断文字）
+        audio_data = None
+        tts_notice = ""
+        norm = config.get("audio_normalization", {})
+        if self._ensure_tts_ready():
+            try:
+                audio_data, timed_out = self._run_with_timeout(
+                    lambda: self.tts_client.synthesize_normalized(
+                        reply,
+                        voice_lang,
+                        params=self._tts_params(),
+                        target_db=norm.get("target_dB", -3.0),
+                        global_volume=norm.get("global_volume", 1.0),
+                    ),
+                    timeout=self._tts_timeout(),
+                )
+                if timed_out:
+                    tts_notice = "[TTS-004] 语音合成超时，已先回复文字"
+                elif audio_data is None:
+                    tts_notice = "[TTS-003] TTS 合成失败，本次回复无语音"
+            except Exception as e:
+                self.log("warning", f"重新生成 TTS 失败（不影响文字）: {e}")
+                tts_notice = f"{format_error(e, prefix='')}，本次回复无语音"
+
+        new_msg = self.conv_mgr.add_message(session_id, "assistant", reply, audio_data)
+        # 旧回复保留为版本记录（Q7 多版本追溯）
+        if old.get("content") and new_msg.get("msg_id"):
+            try:
+                self.conv_mgr.edit_message(
+                    session_id,
+                    new_msg["msg_id"],
+                    reply,
+                    prepend_versions=[old.get("content", "")],
+                )
+            except Exception as e:
+                self.log("debug", f"记录旧回复版本失败: {e}")
+
+        self.last_audio_path = self._last_audio_file(session_id)
+        self.log("info", f"重新生成完成: 提供商={provider_name} 耗时{time.time() - t_start:.1f}s")
+        return {
+            "messages": self.conv_mgr.get_messages(session_id),
+            "audio_path": self.last_audio_path,
+            "provider": provider_name,
+            "session_id": session_id,
+            "session_name": self._session_name(session_id),
             "tts_notice": tts_notice,
         }
 
@@ -522,12 +663,17 @@ class UiService(BaseManager):
         导致 PermissionError。
         """
         messages = self.conv_mgr.get_messages(session_id)
+        sdir = (self.conv_mgr.dir / session_id).resolve()
         for msg in reversed(messages):
             audio_file = msg.get("audio_file")
-            if audio_file:
-                path = self.conv_mgr.dir / session_id / audio_file
-                if path.is_file():
-                    return str(path)
+            if not audio_file:
+                continue
+            path = (self.conv_mgr.dir / session_id / str(audio_file)).resolve()
+            # 路径穿越防护：仅允许会话目录内的音频文件
+            if not str(path).startswith(str(sdir)):
+                continue
+            if path.is_file():
+                return str(path)
         return None
 
     def _session_name(self, session_id: str) -> str:

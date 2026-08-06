@@ -57,6 +57,11 @@ ERROR_CODES = {
     "CFG-004": {"module": "配置", "desc": "LLM API Key 无效", "hint": "检查 Key 是否过期或正确"},
     "CFG-005": {"module": "配置", "desc": "LLM 模型名不可用", "hint": "查询服务商可用模型"},
     "CFG-006": {"module": "配置", "desc": "未填写 LLM API Key", "hint": "在配置面板填写 API Key"},
+    "CFG-007": {
+        "module": "配置",
+        "desc": "LLM 接口或服务不可用（404）",
+        "hint": "检查 base_url 是否填写正确、服务是否支持该路径",
+    },
     # LLM
     "LLM-001": {"module": "LLM", "desc": "LLM 连接失败", "hint": "检查 base_url 与网络/代理"},
     "LLM-002": {"module": "LLM", "desc": "LLM 请求超时", "hint": "网络慢或服务繁忙，稍后重试"},
@@ -129,7 +134,12 @@ def classify(exc: BaseException) -> tuple[str, str]:
     if isinstance(exc, AuthenticationError):
         return "CFG-004", "LLM API Key 无效（401）"
     if isinstance(exc, NotFoundError) or "model_not_found" in str(exc).lower():
-        return "CFG-005", "LLM 模型名不可用"
+        msg_lower = str(exc).lower()
+        # Q4：openai 404 仅在消息含 model 相关关键词时归「模型名不可用」，
+        # 其余（如 base_url 配错/接口不存在）归连接/配置错误，避免误报
+        if "model" in msg_lower or "model_not_found" in msg_lower:
+            return "CFG-005", "LLM 模型名不可用"
+        return "CFG-007", "LLM 接口或服务不可用（404）"
     if isinstance(exc, APITimeoutError):
         return "LLM-002", "LLM 请求超时"
     if isinstance(exc, APIConnectionError):

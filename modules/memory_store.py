@@ -9,7 +9,9 @@
 """
 
 import json
+import os
 import re
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +19,9 @@ from pathlib import Path
 import jieba
 
 from modules.base_manager import BaseManager
+
+# 记忆文件读改写保护（Gradio 并发发送消息时防丢更新/写坏）
+_MEM_LOCK = threading.RLock()
 
 RULE_PATTERNS = [
     r"我喜欢[^，。！？；,!?;]{1,24}",
@@ -103,8 +108,14 @@ class MemoryStore(BaseManager):
     def _safe_key(key: str) -> str:
         return re.sub(r'[\\/:*?"<>|\s]+', "_", key or "").strip("_") or "default"
 
+    @staticmethod
+    def _safe_scope(scope: str) -> str:
+        # scope 仅允许单层字母数字目录名，杜绝路径穿越（../../ 等）
+        cleaned = re.sub(r"[^A-Za-z0-9_-]", "", scope or "")
+        return cleaned or "character"
+
     def _path(self, scope: str, key: str) -> Path:
-        return self.root / scope / self._safe_key(key) / "memories.json"
+        return self.root / self._safe_scope(scope) / self._safe_key(key) / "memories.json"
 
     def _load(self, scope: str, key: str) -> list[dict]:
         p = self._path(scope, key)
@@ -119,7 +130,10 @@ class MemoryStore(BaseManager):
     def _save(self, scope: str, key: str, entries: list[dict]) -> None:
         p = self._path(scope, key)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 原子写入：先写临时文件再 os.replace，避免中断留下截断文件
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, p)
 
     # ---------- 关键词 / 提取 ----------
 
@@ -144,27 +158,28 @@ class MemoryStore(BaseManager):
         if not text or not text.strip():
             return False
         text = text.strip()
-        kws = self._keywords(text)
-        entries = self._load(scope, key)
-        for e in entries:
-            if e.get("text") == text:
-                return False
-            overlap = len(set(e.get("keywords", [])) & set(kws))
-            if overlap >= 2:
-                return False
-        now = datetime.now().isoformat(timespec="seconds")
-        entries.append(
-            {
-                "id": uuid.uuid4().hex[:12],
-                "text": text,
-                "keywords": kws,
-                "source_session": source_session,
-                "created_at": now,
-                "updated_at": now,
-                "hit_count": 0,
-            }
-        )
-        self._save(scope, key, entries)
+        with _MEM_LOCK:
+            kws = self._keywords(text)
+            entries = self._load(scope, key)
+            for e in entries:
+                if e.get("text") == text:
+                    return False
+                overlap = len(set(e.get("keywords", [])) & set(kws))
+                if overlap >= 2:
+                    return False
+            now = datetime.now().isoformat(timespec="seconds")
+            entries.append(
+                {
+                    "id": uuid.uuid4().hex[:12],
+                    "text": text,
+                    "keywords": kws,
+                    "source_session": source_session,
+                    "created_at": now,
+                    "updated_at": now,
+                    "hit_count": 0,
+                }
+            )
+            self._save(scope, key, entries)
         self.log("info", f"新增记忆[{scope}/{key}]: {text}")
         return True
 
@@ -190,22 +205,23 @@ class MemoryStore(BaseManager):
         limit: int = 5,
     ) -> list[str]:
         """按关键词重叠召回相关记忆文本，Top-N。"""
-        entries = self._load(scope, key)
-        if not entries or not query:
-            return []
-        q_tokens = set(self._keywords(query))
-        scored = []
-        for e in entries:
-            score = len(q_tokens & set(e.get("keywords", [])))
-            if score > 0:
-                scored.append((score, e))
-        if not scored:
-            return []
-        scored.sort(key=lambda x: (x[0], x[1].get("updated_at", "")), reverse=True)
-        top = [e for _, e in scored[:limit]]
-        for e in top:
-            e["hit_count"] = e.get("hit_count", 0) + 1
-        self._save(scope, key, entries)
+        with _MEM_LOCK:
+            entries = self._load(scope, key)
+            if not entries or not query:
+                return []
+            q_tokens = set(self._keywords(query))
+            scored = []
+            for e in entries:
+                score = len(q_tokens & set(e.get("keywords", [])))
+                if score > 0:
+                    scored.append((score, e))
+            if not scored:
+                return []
+            scored.sort(key=lambda x: (x[0], x[1].get("updated_at", "")), reverse=True)
+            top = [e for _, e in scored[:limit]]
+            for e in top:
+                e["hit_count"] = e.get("hit_count", 0) + 1
+            self._save(scope, key, entries)
         return [e["text"] for e in top]
 
     def list_entries(self, scope: str = "character", key: str = "") -> list[dict]:
@@ -213,10 +229,11 @@ class MemoryStore(BaseManager):
 
     def clear(self, scope: str = "character", key: str = "") -> int:
         """清空指定记忆库，返回删除条数。"""
-        entries = self._load(scope, key)
-        if entries:
-            self._path(scope, key).unlink(missing_ok=True)
-        return len(entries)
+        with _MEM_LOCK:
+            entries = self._load(scope, key)
+            if entries:
+                self._path(scope, key).unlink(missing_ok=True)
+            return len(entries)
 
     def count(self, scope: str = "character", key: str = "") -> int:
         return len(self._load(scope, key))

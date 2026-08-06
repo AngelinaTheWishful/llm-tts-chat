@@ -43,6 +43,11 @@ DEFAULT_CONFIG = {
         "sidebar_collapsed": False,
         "sidebar_width": 320,
     },
+    "backup": {
+        "enabled": True,
+        "keep_count": 3,
+        "interval_hours": 24,
+    },
     "memory": {
         "enabled": True,
         "scope": "character",
@@ -162,8 +167,10 @@ class ConfigManager(BaseManager):
         if self.path.exists():
             try:
                 user_config = json.loads(self.path.read_text(encoding="utf-8-sig"))
+                if not isinstance(user_config, dict):
+                    raise ValueError("配置顶层不是对象（object），已忽略")
                 _deep_merge(config, user_config)
-            except (json.JSONDecodeError, OSError) as e:
+            except (json.JSONDecodeError, OSError, ValueError) as e:
                 self.log("error", f"[CFG-001] 配置加载失败，使用默认配置: {e}")
         self._config = config
         self.check_data_version()

@@ -41,5 +41,18 @@
   "TTS API 在线": "TTS API online",
   "TTS API 离线": "TTS API offline",
   "提供商": "Provider",
-  "会话": "Session"
+  "训练管理": "Training",
+  "GPT-SoVITS 路径": "GPT-SoVITS path",
+  "训练实验": "Training experiment",
+  "预览打包": "Preview",
+  "打包并清理": "Pack & cleanup",
+  "打包后清理中间素材": "Cleanup after pack",
+  "自动检测训练完成（提醒）": "Auto-detect completion (notify)",
+  "全自动打包清理（auto_full）": "Auto pack (auto_full)",
+  "保存训练配置": "Save training config",
+  "归档 zip": "Archive zip",
+  "写回 GPT-SoVITS": "Write back to GPT-SoVITS",
+  "恢复归档": "Restore archive",
+  "重新生成最后回复": "Regenerate last reply",
+  "编辑最后一条 AI 回复": "Edit last AI reply"
 }

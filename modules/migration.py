@@ -21,6 +21,11 @@ def _parse_version(name: str) -> tuple[str, str] | None:
     return parts[0].lstrip("v"), parts[1].lstrip("v")
 
 
+def _version_key(ver: str) -> tuple[int, ...]:
+    """版本号转数值元组用于数字排序（避免 '10.0' < '9.0' 的字典序问题）。"""
+    return tuple(int(p) if p.isdigit() else 0 for p in ver.split("."))
+
+
 class MigrationManager(BaseManager):
     """数据迁移执行器。"""
 
@@ -46,14 +51,17 @@ class MigrationManager(BaseManager):
 
         scripts = sorted(
             (f for f in self.migrations_dir.glob("v*_to_v*.py") if _parse_version(f.name)),
-            key=lambda f: _parse_version(f.name)[0],
+            key=lambda f: _version_key(_parse_version(f.name)[0]),
         )
 
+        # 链式迁移：从当前版本出发，按 from_ver == 上一 to_ver 依次衔接
         applicable = []
+        chain_ver = current
         for script in scripts:
             from_ver, to_ver = _parse_version(script.name)
-            if from_ver == current:
+            if from_ver == chain_ver:
                 applicable.append((script, to_ver))
+                chain_ver = to_ver
 
         if not applicable:
             target_version = getattr(self.config_mgr, "DATA_VERSION", "1.0")
@@ -90,11 +98,35 @@ class MigrationManager(BaseManager):
         return module
 
     def _backup(self, backup_path: Path) -> None:
+        """Q12：备份 config.json + 数据目录（characters/conversations/memories），失败不阻断。"""
         config_path = self.config_mgr.path
         if config_path.exists():
             shutil.copy2(config_path, backup_path / "config.json")
 
+        # 数据目录（迁移脚本可能改动角色/会话/记忆数据）
+        data_root = self.data_dir if self.data_dir and self.data_dir != Path(".") else None
+        for sub in ("characters", "conversations", "memories"):
+            src = (data_root or Path(".")) / sub
+            if src.exists():
+                dst = backup_path / sub
+                try:
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                except OSError as e:
+                    self.log("warning", f"迁移备份跳过目录 {sub}: {e}")
+
     def _restore(self, backup_path: Path) -> None:
+        """Q12：从备份还原 config.json 与数据目录（回滚时使用）。"""
         config_backup = backup_path / "config.json"
         if config_backup.exists():
             shutil.copy2(config_backup, self.config_mgr.path)
+        data_root = self.data_dir if self.data_dir and self.data_dir != Path(".") else None
+        for sub in ("characters", "conversations", "memories"):
+            src = backup_path / sub
+            if src.exists():
+                dst = (data_root or Path(".")) / sub
+                try:
+                    if dst.exists():
+                        shutil.rmtree(str(dst), ignore_errors=True)
+                    shutil.copytree(src, dst)
+                except OSError as e:
+                    self.log("warning", f"迁移回滚失败 {sub}: {e}")

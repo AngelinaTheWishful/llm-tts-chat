@@ -35,6 +35,11 @@
     "sidebar_collapsed": false,
     "sidebar_width": 320
   },
+  "backup": {
+    "enabled": true,
+    "keep_count": 3,
+    "interval_hours": 24
+  },
   "memory": {
     "enabled": true,
     "scope": "character",

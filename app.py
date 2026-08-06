@@ -13,6 +13,7 @@ from pathlib import Path
 
 import gradio as gr
 
+from modules.backup import BackupManager
 from modules.character_manager import CharManager
 from modules.config_manager import ConfigManager, apply_proxy_env, encrypt_api_key
 from modules.conversation_manager import ConvManager
@@ -159,7 +160,13 @@ function init_sidebar_resizer() {
 """
 
 char_mgr = CharManager(CHARACTERS_DIR, config_manager=config_mgr)
-conv_mgr = ConvManager(CONVERSATIONS_DIR)
+# Q5：会话管理读取 app.max_history_rounds / app.summarize_trigger_rounds 配置（原用默认参数）
+_app_cfg = config_mgr.get("app", {})
+conv_mgr = ConvManager(
+    CONVERSATIONS_DIR,
+    max_history_rounds=int(_app_cfg.get("max_history_rounds", 4)),
+    summarize_trigger_rounds=int(_app_cfg.get("summarize_trigger_rounds", 20)),
+)
 tts_client = TTSClient(config_mgr.get("tts", {}).get("api_base_url", "http://127.0.0.1:9880"))
 ui_service = UiService(config_mgr, char_mgr, conv_mgr, tts_client)
 
@@ -168,6 +175,14 @@ training_ops = TrainingOps(
     gsv_root=_gt_cfg.get("gsv_root", ""),
     archive_dir=_gt_cfg.get("archive_dir", ""),
     restore_dir=_gt_cfg.get("restore_dir", ""),
+)
+
+# Q8：自动备份（backup/，启动 + 定时）
+_bk_cfg = config_mgr.get("backup", {})
+backup_mgr = BackupManager(
+    PROJECT_ROOT,
+    backup_root=PROJECT_ROOT / "backup",
+    keep_count=int(_bk_cfg.get("keep_count", 3) or 3),
 )
 
 session_options = [(s["name"], s["id"]) for s in conv_mgr.list_sessions()]
@@ -250,6 +265,62 @@ def send_message_handler(user_input, text_lang, voice_lang):
         gr.update(value=chatbot_value),
         _status_text(),
         gr.update(value=""),
+    )
+
+
+def regenerate_handler(text_lang, voice_lang):
+    """Q7：重新生成最后一条 AI 回复。"""
+    result = ui_service.regenerate_last_reply(text_lang, voice_lang)
+    if "error" in result:
+        # 失败时旧回复已恢复，仍显示当前聊天（避免清空历史）
+        session_id = ui_service.active_session
+        current_msgs = ui_service.conv_mgr.get_messages(session_id) if session_id else []
+        return (
+            gr.update(visible=True, value=f"🔴 {result['error']}"),
+            gr.update(visible=False, value=None),
+            gr.update(value=ui_service.messages_to_chatbot(current_msgs)),
+            _status_text(),
+        )
+    chatbot_value = ui_service.messages_to_chatbot(result["messages"])
+    notice = result.get("tts_notice") or ""
+    banner_value = f"🟡 {notice}" if notice else ""
+    return (
+        gr.update(visible=bool(notice), value=banner_value),
+        gr.update(visible=True, value=result.get("audio_path") or None),
+        gr.update(value=chatbot_value),
+        _status_text(),
+    )
+
+
+def toggle_edit_handler():
+    """显示编辑行。"""
+    return gr.update(visible=True)
+
+
+def confirm_edit_handler(edit_text):
+    """Q10：编辑最后一条 AI 回复。返回 (隐藏编辑行, 刷新聊天显示)。"""
+    if not edit_text or not edit_text.strip():
+        gr.Info("🔴 编辑内容不能为空")
+        return gr.update(), gr.update()
+    session_id = ui_service.active_session
+    if not session_id:
+        gr.Info("🔴 尚无会话")
+        return gr.update(), gr.update()
+    messages = ui_service.conv_mgr.get_messages(session_id)
+    if not messages or messages[-1].get("role") != "assistant":
+        gr.Info("🔴 最后一条消息不是 AI 回复，无法编辑")
+        return gr.update(), gr.update()
+    msg_id = messages[-1].get("msg_id")
+    updated = ui_service.conv_mgr.edit_message(session_id, msg_id, edit_text.strip())
+    if not updated:
+        gr.Info("🔴 编辑失败")
+        return gr.update(), gr.update()
+    gr.Info("🟢 已编辑最后一条 AI 回复")
+    return (
+        gr.update(visible=False),
+        gr.update(
+            value=ui_service.messages_to_chatbot(ui_service.conv_mgr.get_messages(session_id))
+        ),
     )
 
 
@@ -410,7 +481,7 @@ def save_character_handler(
     """保存角色编辑表单。"""
     name = (char_name or "").strip()
     if not name:
-        return gr.update(value="🔴 [CHR-003] 角色名称不能为空")
+        return gr.update(value="🔴 [CHR-003] 角色名称不能为空"), gr.update()
 
     character = char_mgr.get_character(character_name) or {"name": name}
     character["name"] = name
@@ -660,10 +731,10 @@ def refresh_trash_handler():
 
 def restore_trash_handler(trash_id):
     if not trash_id:
-        return gr.update(value="🔴 请先选择要恢复的会话")
+        return gr.update(value="🔴 请先选择要恢复的会话"), gr.update()
     sid = conv_mgr.restore_from_trash(trash_id)
     if not sid:
-        return gr.update(value="🔴 恢复失败")
+        return gr.update(value="🔴 恢复失败"), gr.update()
     sessions = conv_mgr.list_sessions()
     return (
         gr.update(value=f"🟢 已恢复会话: {sid}"),
@@ -867,6 +938,15 @@ def save_training_settings_handler(gsv_root, cleanup_after, auto_detect, auto_fu
     training_ops.gsv_root = Path(gsv_root).resolve() if gsv_root else Path("")
     gr.Info("🟢 训练配置已保存，即时生效")
     return gr.update(value="🟢 训练配置已保存，即时生效")
+
+
+def periodic_backup_handler():
+    """定时自动备份（Q8），失败仅记日志不阻塞。"""
+    try:
+        backup_mgr.backup_now()
+        logger.info("定时自动备份完成")
+    except Exception as e:
+        logger.warning(f"定时自动备份失败: {e}")
 
 
 # ---------- 侧栏折叠 / 配置保存（Phase 9） ----------
@@ -1379,43 +1459,43 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                         trash_empty_btn = gr.Button("清空回收站")
                     trash_status = gr.Markdown(visible=False)
 
-                with gr.Accordion("训练管理", open=False):
+                with gr.Accordion(i18n.t("训练管理"), open=False):
                     tr_gsv_root = gr.Textbox(
-                        label="GPT-SoVITS 路径",
+                        label=i18n.t("GPT-SoVITS 路径"),
                         value=_gt_cfg.get("gsv_root", ""),
                         placeholder="C:/.../GPT-SoVITS-v2pro-20250604",
                     )
                     with gr.Row():
                         tr_exp_dd = gr.Dropdown(
-                            label="训练实验",
+                            label=i18n.t("训练实验"),
                             choices=[e["experiment"] for e in training_ops.scan_experiments()],
                             value=None,
                         )
                         tr_refresh_btn = gr.Button("刷新")
                     with gr.Row():
-                        tr_preview_btn = gr.Button("预览打包")
-                        tr_pack_btn = gr.Button("打包并清理")
+                        tr_preview_btn = gr.Button(i18n.t("预览打包"))
+                        tr_pack_btn = gr.Button(i18n.t("打包并清理"))
                     tr_cleanup_cb = gr.Checkbox(
-                        label="打包后清理中间素材",
+                        label=i18n.t("打包后清理中间素材"),
                         value=_gt_cfg.get("cleanup_after_pack", True),
                     )
                     tr_auto_detect = gr.Checkbox(
-                        label="自动检测训练完成（提醒）",
+                        label=i18n.t("自动检测训练完成（提醒）"),
                         value=_gt_cfg.get("auto_detect", False),
                     )
                     tr_auto_full = gr.Checkbox(
-                        label="全自动打包清理（auto_full）",
+                        label=i18n.t("全自动打包清理（auto_full）"),
                         value=_gt_cfg.get("auto_full", False),
                     )
-                    tr_save_cfg_btn = gr.Button("保存训练配置")
+                    tr_save_cfg_btn = gr.Button(i18n.t("保存训练配置"))
                     with gr.Row():
                         tr_archive_dd = gr.Dropdown(
-                            label="归档 zip",
+                            label=i18n.t("归档 zip"),
                             choices=[a["path"] for a in training_ops.list_archives()],
                             value=None,
                         )
-                        tr_writeback_cb = gr.Checkbox(label="写回 GPT-SoVITS", value=False)
-                    tr_restore_btn = gr.Button("恢复归档")
+                        tr_writeback_cb = gr.Checkbox(label=i18n.t("写回 GPT-SoVITS"), value=False)
+                    tr_restore_btn = gr.Button(i18n.t("恢复归档"))
                     tr_status = gr.Markdown(visible=False)
 
                 gr.Markdown("### " + i18n.t("状态"))
@@ -1464,7 +1544,16 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                 input_box = gr.Textbox(
                     label="输入消息", placeholder="Enter 发送，Shift+Enter 换行", lines=2
                 )
-                send_btn = gr.Button("发送", variant="primary")
+                with gr.Row():
+                    send_btn = gr.Button(i18n.t("发送"), variant="primary")
+                    regen_btn = gr.Button(i18n.t("重新生成最后回复"))
+                    edit_btn = gr.Button(i18n.t("编辑最后一条 AI 回复"))
+
+                # Q10：编辑最后一条 AI 回复（编辑内容输入框 + 确认按钮）
+                with gr.Row(visible=False) as edit_row:
+                    edit_input = gr.Textbox(label="编辑内容", lines=2)
+                    edit_confirm_btn = gr.Button("确认编辑", variant="primary")
+                    edit_cancel_btn = gr.Button("取消")
 
         banner = gr.Markdown(visible=False)
 
@@ -1490,6 +1579,20 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
 
     send_btn.click(fn=send_message_handler, inputs=send_inputs, outputs=send_outputs)
     input_box.submit(fn=send_message_handler, inputs=send_inputs, outputs=send_outputs)
+
+    # Q7：重新生成最后一条 AI 回复
+    regen_outputs = [banner, audio_player, chatbot, status_text]
+    regen_inputs = [text_lang_dd, voice_lang_dd]
+    regen_btn.click(fn=regenerate_handler, inputs=regen_inputs, outputs=regen_outputs)
+
+    # Q10：编辑最后一条 AI 回复
+    edit_btn.click(fn=toggle_edit_handler, outputs=[edit_row])
+    edit_confirm_btn.click(
+        fn=confirm_edit_handler,
+        inputs=[edit_input],
+        outputs=[edit_row, chatbot],
+    )
+    edit_cancel_btn.click(fn=lambda: gr.update(visible=False), outputs=[edit_row])
 
     new_session_btn.click(
         fn=new_session_handler,
@@ -1741,6 +1844,12 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
     training_timer = gr.Timer(value=60)
     training_timer.tick(fn=auto_detect_handler, outputs=[tr_status])
 
+    # Q8：定时自动备份（默认每 24h，由 backup.interval_hours 控制）
+    if config_mgr.get("backup", {}).get("enabled", True):
+        _bk_interval = float(config_mgr.get("backup", {}).get("interval_hours", 24) or 24)
+        backup_timer = gr.Timer(value=_bk_interval * 3600)
+        backup_timer.tick(fn=periodic_backup_handler)
+
     return wizard_block, main_block, status_text, trash_status
 
 
@@ -1785,6 +1894,15 @@ def _main_impl(args: argparse.Namespace) -> None:
         write_entry("startup_report", "数据迁移", "FAIL", code="SYS-004", detail=msg)
     else:
         write_entry("startup_report", "数据迁移", "OK", detail=msg or "无需迁移")
+
+    # Q8：启动时执行一次自动备份（失败不阻断启动）
+    if config_mgr.get("backup", {}).get("enabled", True):
+        try:
+            backup_mgr.backup_now()
+            write_entry("startup_report", "自动备份", "OK")
+        except Exception as e:
+            logger.warning(f"启动自动备份失败: {e}")
+            write_entry("startup_report", "自动备份", "WARN", detail=str(e)[:120])
 
     with gr.Blocks(
         title="LLM 角色扮演聊天",

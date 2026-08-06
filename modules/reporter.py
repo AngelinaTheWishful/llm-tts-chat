@@ -17,6 +17,8 @@ KEEP_DAYS = 7
 REPORTS = ("startup_report", "run_report")
 
 _lock = threading.Lock()
+# Q13：清理节流——每小时最多执行一次，避免每次写入都全目录扫描
+_last_cleanup_ts: float = 0.0
 
 
 def _today() -> str:
@@ -32,8 +34,13 @@ def _paths(report: str) -> tuple[Path, Path]:
     return base.with_suffix(".txt"), base.with_suffix(".jsonl")
 
 
-def _cleanup() -> None:
-    """删除超过 KEEP_DAYS 天的报告文件（txt/jsonl）。"""
+def _cleanup(force: bool = False) -> None:
+    """删除超过 KEEP_DAYS 天的报告文件（txt/jsonl），默认每小时至多执行一次（Q13）。"""
+    global _last_cleanup_ts
+    now_ts = datetime.now().timestamp()
+    if not force and (now_ts - _last_cleanup_ts) < 3600:
+        return
+    _last_cleanup_ts = now_ts
     cutoff = (datetime.now() - timedelta(days=KEEP_DAYS)).timestamp()
     try:
         for f in LOG_DIR.glob("*.txt"):

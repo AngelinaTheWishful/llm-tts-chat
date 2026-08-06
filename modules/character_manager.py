@@ -202,11 +202,41 @@ class CharManager(BaseManager):
             with tempfile.TemporaryDirectory() as td:
                 tmp = Path(td)
                 with zipfile.ZipFile(source, "r") as zf:
-                    for member in zf.namelist():
-                        mp = Path(member)
-                        if mp.is_absolute() or ".." in mp.parts:
-                            warnings.append(f"跳过不安全路径: {member}")
-                    zf.extractall(tmp)
+                    names = zf.namelist()
+                    if not names:
+                        warnings.append("导入包为空 zip")
+                        return warnings
+                    # zip 炸弹防护：成员数 / 总解压大小 / 单文件大小上限
+                    info_list = zf.infolist()
+                    total_size = sum(i.file_size for i in info_list)
+                    if len(names) > 1000:
+                        warnings.append("导入包成员数超过 1000，已拒绝")
+                        return warnings
+                    if total_size > 500 * 1024 * 1024:
+                        warnings.append("导入包解压总大小超过 500MB，已拒绝")
+                        return warnings
+                    if any(i.file_size > 100 * 1024 * 1024 for i in info_list):
+                        warnings.append("导入包存在超过 100MB 的单文件，已拒绝")
+                        return warnings
+                    # zip-slip：逐成员校验，仅解压安全路径，恶意成员直接跳过
+                    for info in info_list:
+                        mp = Path(info.filename)
+                        if info.is_dir() or mp.is_absolute() or ".." in mp.parts:
+                            warnings.append(f"跳过不安全路径: {info.filename}")
+                            continue
+                        try:
+                            zf.extract(info, tmp)
+                        except Exception as e:  # noqa: BLE001
+                            warnings.append(f"解压失败已跳过: {info.filename}: {e}")
+                            continue
+                    # 解压后再次确认所有落盘文件都在临时目录内（防御双保险），越界文件直接删除
+                    for f in tmp.rglob("*"):
+                        if f.is_file() and not str(f.resolve()).startswith(str(tmp.resolve())):
+                            warnings.append(f"已删除解压越界文件: {f}")
+                            try:
+                                f.unlink(missing_ok=True)
+                            except OSError:
+                                pass
 
                 char_json = tmp / "character.json"
                 if not char_json.exists():
@@ -304,6 +334,11 @@ class CharManager(BaseManager):
         char_dir = self.get_character_dir(name)
         if not char_dir:
             raise FileNotFoundError(f"角色不存在: {name}")
+
+        # Q6：限制上传图片大小（≤80MB），防止超大图片耗尽内存
+        upload = Path(upload_path)
+        if upload.is_file() and upload.stat().st_size > 80 * 1024 * 1024:
+            raise ValueError("上传图片超过 80MB 限制，请压缩后重试")
 
         img = Image.open(upload_path)
         if img.mode != "RGBA":
