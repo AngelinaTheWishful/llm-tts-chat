@@ -1,6 +1,7 @@
 """TrainingOps 单元测试（章节八十二）。"""
 
 import os
+import sys
 import zipfile
 from pathlib import Path
 
@@ -145,6 +146,26 @@ def test_cleanup_dry_run(tmp_path):
     assert (gsv / "logs" / "suomiKP31_EXP_01" / "3-bert").exists()
 
 
+def test_cleanup_counts_only_removed(tmp_path, monkeypatch):
+    """清理计数只统计实际删除成功的项；rmtree 静默失败不虚增 cleaned（章节八十二修复）。"""
+    ops, gsv = _make_ops(tmp_path)
+    assert ops.pack_experiment("suomiKP31_EXP_01")["ok"] is True
+    exp = gsv / "logs" / "suomiKP31_EXP_01"
+
+    import shutil
+
+    def fake_rmtree(path, **kwargs):
+        pass  # 静默失败：目录仍保留
+
+    monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
+    result = ops.cleanup_intermediates("suomiKP31_EXP_01")
+    assert result["ok"] is True
+    assert result["cleaned"] == 1  # 仅 2-name2text.txt（文件）删除成功
+    assert (exp / "3-bert").exists() is True
+    assert (exp / "5-wav32k").exists() is True
+    assert (exp / "2-name2text.txt").exists() is False
+
+
 # ---------- 恢复 ----------
 
 
@@ -176,6 +197,19 @@ def test_restore_rejects_unsafe_path(tmp_path):
     assert result["ok"] is False
 
 
+def test_restore_experiment_name_with_timestamp_suffix(tmp_path):
+    """实验名自身以 _YYYYMMDD_HHMMSS 结尾时，解析实验名不被错误剥离（章节八十二修复）。"""
+    ops, _ = _make_ops(tmp_path)
+    exp = tmp_path / "gsv" / "logs" / "EXP_20260101_120000"
+    (exp / "logs_s1_v2Pro" / "ckpt").mkdir(parents=True)
+    (exp / "logs_s1_v2Pro" / "ckpt" / "epoch=1.ckpt").write_bytes(b"s1")
+    result = ops.pack_experiment("EXP_20260101_120000")
+    assert result["ok"] is True
+    restored = ops.restore_archive(result["zip"])
+    assert restored["ok"] is True
+    assert restored["experiment"] == "EXP_20260101_120000"
+
+
 # ---------- 归档 / 检测 / 联动 ----------
 
 
@@ -187,6 +221,19 @@ def test_has_archive_and_list_archives(tmp_path):
     archives = ops.list_archives()
     assert len(archives) == 1
     assert archives[0]["size_text"]
+
+
+def test_has_archive_glob_special_chars(tmp_path):
+    """实验名含 glob 特殊字符（[ ]）时归档检测不被误匹配（章节八十二修复）。"""
+    ops, _ = _make_ops(tmp_path)
+    name = "EXP[01]"
+    exp = tmp_path / "gsv" / "logs" / name
+    (exp / "logs_s1_v2Pro" / "ckpt").mkdir(parents=True)
+    (exp / "logs_s1_v2Pro" / "ckpt" / "epoch=1.ckpt").write_bytes(b"s1")
+    assert ops.pack_experiment(name)["ok"] is True
+    assert ops.has_archive(name) is True
+    # 未归档的同名变形不匹配
+    assert ops.has_archive("EXP0") is False
 
 
 def test_detect_completed(tmp_path):
@@ -227,3 +274,62 @@ def test_format_size():
     assert format_size(1024) == "1.0 KB"
     assert format_size(1024 * 1024 * 155) == "155.0 MB"
     assert format_size(1024**3) == "1.0 GB"
+
+
+# ---------- CLI 传参 ----------
+
+
+def test_build_ops_loads_project_config(tmp_path, monkeypatch):
+    """CLI _build_ops 从项目根显式加载 config.json，不依赖运行 CWD（传参修复）。"""
+    import json
+
+    from modules import training_cli
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "gsv_training": {
+                    "gsv_root": "C:/mock/gsv",
+                    "archive_dir": "",
+                    "restore_dir": "",
+                    "cleanup_after_pack": True,
+                    "auto_detect": False,
+                    "auto_full": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # 将训练 CLI 的项目根重定向到 tmp_path，模拟项目根含 config.json
+    monkeypatch.setattr(training_cli, "_PROJECT_ROOT", tmp_path)
+
+    class Args:
+        gsv_root = ""
+        archive_dir = ""
+        restore_dir = ""
+
+    ops = training_cli._build_ops(Args())
+    assert str(ops.gsv_root).replace("\\", "/") == "C:/mock/gsv"
+
+    # 命令行参数优先于配置文件
+    class ArgsOverride(Args):
+        gsv_root = "C:/override"
+
+    ops2 = training_cli._build_ops(ArgsOverride())
+    assert str(ops2.gsv_root).replace("\\", "/") == "C:/override"
+
+
+def test_load_character_to_editor_resets_training_voice(tmp_path, monkeypatch):
+    """切换角色时训练音色下拉必须重置（末项 value=None），防止音色串角色（传参修复）。"""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import app
+
+    # 两种分支（角色存在/不存在）都必须返回 13 项，且末项（训练音色）为 None
+    vals_none = app.load_character_to_editor("__不存在的角色__")
+    assert len(vals_none) == 13
+    assert vals_none[12]["value"] is None
+
+    vals = app.load_character_to_editor("暴行")
+    assert len(vals) == 13
+    assert vals[12]["value"] is None
