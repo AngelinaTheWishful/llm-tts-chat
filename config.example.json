@@ -1,4 +1,4 @@
-{
+﻿{
   "data_version": "1.0",
   "llm": {
     "active_provider": "deepseek",
@@ -41,7 +41,7 @@
     "recall_limit": 5,
     "extract_with_llm": false
   },
-  "gsv_root": "C:/Users/Administrator/Object1687/GPT-SoVITS-v2pro-20250604",
+  "gsv_root": "D:\GPT-SoVITS\GPT-SoVITS-v2pro-20250604",
   "external_characters": [],
   "trash": {
     "auto_clean_days": 30,
@@ -76,7 +76,7 @@
     "no_proxy": ["localhost", "127.0.0.1"]
   },
   "gsv_training": {
-    "gsv_root": "C:/Users/Administrator/Object1687/GPT-SoVITS-v2pro-20250604",
+    "gsv_root": "D:\GPT-SoVITS\GPT-SoVITS-v2pro-20250604",
     "archive_dir": "",
     "restore_dir": "",
     "cleanup_after_pack": true,
