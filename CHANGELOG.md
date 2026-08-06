@@ -2,6 +2,18 @@
 
 本文件记录所有已发布版本的应用变更。
 
+## [v1.3.3] - 2026-08-06
+
+### 新增
+
+- **角色「予愿安洁莉娜」入库**（章节九十二配套）：`characters/予愿安洁莉娜/character.json` 随包发布（含人设/问候语/口癖/背景/喜好/厌恶/行为准则/CoT/Lorebook/音色预设）；媒体文件（头像/背景/参考音频）不入库
+- **予愿安洁莉娜专属音色**（本地）：GPT-SoVITS v2Pro 训练（中配·溯浔，38 段官方语音），GPT/SoVITS 权重与归档见机密目录（`dev_archive/secret/`、`gsv_training/`）
+
+### 修复
+
+- **聊天背景不显示**：Gradio 组件外层 `.block` 有不透明背景（`--block-background-fill`），盖住 `#chat-area` 的背景图与遮罩；已对 `#chat-area` 内 `.block/.chatbot/.chatbot-wrap/.messages` 统一透明，背景与遮罩透明度即时生效
+- **背景上传字段规范化**（v1.3.1 遗留）：上传背景时 `character.json.background` 误写为原始上传文件名，现改为规范化 `background.{ext}`，与落盘文件一致
+
 ## [v1.3.2] - 2026-08-06
 
 ### 新增
