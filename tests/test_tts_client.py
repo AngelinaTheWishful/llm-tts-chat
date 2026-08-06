@@ -128,6 +128,17 @@ def test_check_api_offline(monkeypatch):
     assert client.check_api() is False
 
 
+def test_check_api_5xx_not_online(monkeypatch):
+    """Q1：服务器返回 5xx 视为服务异常而非在线。"""
+    client = TTSClient()
+
+    def fake_get(url, params=None, timeout=30):
+        return MockResponse(status_code=500)
+
+    monkeypatch.setattr("requests.get", fake_get)
+    assert client.check_api() is False
+
+
 def test_set_refer_audio_params(monkeypatch):
     client = TTSClient()
     captured = {}

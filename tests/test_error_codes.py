@@ -69,8 +69,15 @@ def test_classify_invalid_key():
 
 
 def test_classify_model_not_found():
-    code, _ = classify(openai.NotFoundError("404", response=_http_resp(), body={}))
+    # Q4：404 消息含 model 相关关键词 → 模型名不可用
+    code, _ = classify(openai.NotFoundError("model not found", response=_http_resp(), body={}))
     assert code == "CFG-005"
+
+
+def test_classify_not_found_without_model_hint():
+    # Q4：404 消息不含 model（如 base_url 配错）→ 接口/服务不可用（CFG-007）
+    code, _ = classify(openai.NotFoundError("404 Not Found", response=_http_resp(), body={}))
+    assert code == "CFG-007"
 
 
 def test_classify_missing_credentials():

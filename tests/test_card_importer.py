@@ -141,6 +141,16 @@ def test_parse_invalid(tmp_path):
         parse_cards(p)
 
 
+def test_parse_cards_rejects_oversize(tmp_path):
+    """Q11：角色卡文件超过 50MB 限制时拒绝导入。"""
+    p = tmp_path / "huge.txt"
+    with open(p, "wb") as f:
+        f.seek(50 * 1024 * 1024)
+        f.write(b"\x00")
+    with pytest.raises(ValueError, match="50MB"):
+        parse_cards(p)
+
+
 # ---------- 字段映射 ----------
 
 

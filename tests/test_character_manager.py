@@ -79,6 +79,37 @@ def test_export_and_import_character(tmp_path):
     assert any("头像" in w for w in warnings)  # 仅缺头像文件
 
 
+def test_import_character_zip_slip_guarded(tmp_path):
+    """恶意 zip 含 ../ 路径时跳过该成员，不越界写出（zip-slip 修复）。"""
+    import zipfile
+
+    evil_zip = tmp_path / "evil.zip"
+    with zipfile.ZipFile(evil_zip, "w") as zf:
+        zf.writestr("character.json", json.dumps({**SAMPLE_CHAR, "name": "越界测试"}))
+        zf.writestr("../evil.txt", "pwned")
+
+    mgr = CharManager(tmp_path / "chars")
+    warnings = mgr.import_character(evil_zip)
+    assert mgr.get_character("越界测试") is not None  # 正常成员仍导入
+    assert not (tmp_path / "evil.txt").exists()  # 越界成员未写出
+    assert any("不安全" in w for w in warnings)
+
+
+def test_import_character_rejects_zip_bomb(tmp_path):
+    """超大/超多成员的 zip 拒绝导入（zip 炸弹防护，修复）。"""
+    import zipfile
+
+    bomb_zip = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(bomb_zip, "w") as zf:
+        zf.writestr("character.json", json.dumps({**SAMPLE_CHAR, "name": "炸弹"}))
+        zf.writestr("big.bin", b"\0" * (101 * 1024 * 1024))
+
+    mgr = CharManager(tmp_path / "chars")
+    warnings = mgr.import_character(bomb_zip)
+    assert mgr.get_character("炸弹") is None  # 拒绝导入
+    assert any("超大" in w or "超过" in w for w in warnings)
+
+
 def test_import_character_folder(tmp_path):
     src = tmp_path / "ext_source"
     make_char_dir(src, "外部角色")
@@ -103,6 +134,22 @@ def test_update_portrait(tmp_path):
         assert img.size == (512, 512)
     with Image.open(result["thumb"]) as img:
         assert img.size == (64, 64)
+
+
+def test_update_portrait_rejects_oversize(tmp_path):
+    """Q6：上传头像超过 80MB 限制时拒绝。"""
+    import pytest
+
+    make_char_dir(tmp_path, "大头像")
+    upload = tmp_path / "huge.png"
+    # 用稀疏文件模拟超大文件（无需真实 80MB）
+    with open(upload, "wb") as f:
+        f.seek(80 * 1024 * 1024)
+        f.write(b"\x00")
+
+    mgr = CharManager(tmp_path)
+    with pytest.raises(ValueError, match="80MB"):
+        mgr.update_portrait("大头像", str(upload))
 
 
 def test_validate_package_warns_missing_files(tmp_path):

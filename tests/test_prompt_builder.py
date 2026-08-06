@@ -70,3 +70,21 @@ def test_build_messages_structure():
     assert "之前聊过学习" in messages[1]["content"]
     assert messages[2]["content"] == "那要多复习"
     assert messages[3] == {"role": "user", "content": "好的"}
+
+
+def test_build_system_prompt_tolerates_non_list_fields():
+    """likes/speech_quirks 等字段为非列表（用户手改配置）时不崩溃（修复）。"""
+    bad = {
+        "name": "乱配置",
+        "system_prompt_structured": {
+            "personality": "温和",
+            "speech_quirks": "句尾加呢",  # 字符串而非列表
+            "likes": None,  # None 而非列表
+            "dislikes": "香菜",  # 字符串
+            "behavior_rules": ["保持耐心"],
+        },
+    }
+    prompt = build_system_prompt(bad)
+    assert "乱配置" in prompt
+    assert "句尾加呢" in prompt
+    assert "[喜好]" in prompt

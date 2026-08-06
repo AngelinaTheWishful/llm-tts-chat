@@ -205,6 +205,44 @@ def test_search_global_with_filters(tmp_path):
     assert fav_only[0]["index"] == 1
 
 
+def test_search_global_role_filter(tmp_path):
+    """role 筛选应按消息角色（user/assistant）过滤，而非会话名（修复）。"""
+    mgr = ConvManager(tmp_path)
+    s1 = mgr.create_session("会话A")
+    mgr.add_message(s1, "user", "讨论钢琴")
+    mgr.add_message(s1, "assistant", "钢琴很好听")
+
+    user_only = mgr.search_global("钢琴", filters={"role": "user"})
+    assert len(user_only) == 1
+    assert user_only[0]["role"] == "user"
+
+    ai_only = mgr.search_global("钢琴", filters={"role": "assistant"})
+    assert len(ai_only) == 1
+    assert ai_only[0]["role"] == "assistant"
+
+
+def test_import_session_rejects_non_dict_messages(tmp_path):
+    """messages.json 含非法消息结构（非 dict/缺 role/content）时拒绝导入（修复）。"""
+    bad_zip = tmp_path / "badmsg.zip"
+    with zipfile.ZipFile(bad_zip, "w") as zf:
+        zf.writestr("messages.json", '["abc", 123]')
+
+    mgr = ConvManager(tmp_path / "convs")
+    assert mgr.import_session(bad_zip) is None
+
+
+def test_import_session_rejects_zip_bomb(tmp_path):
+    """超多成员/超大的 zip 拒绝导入（zip 炸弹防护，修复）。"""
+    bomb_zip = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(bomb_zip, "w") as zf:
+        zf.writestr("messages.json", "[]")
+        # 单文件超过 100MB 上限（用稀疏内容模拟 file_size 大）
+        zf.writestr("big.bin", b"\0" * (101 * 1024 * 1024))
+
+    mgr = ConvManager(tmp_path / "convs")
+    assert mgr.import_session(bomb_zip) is None
+
+
 # ---------- 统计（章节六十八） ----------
 
 
@@ -275,6 +313,32 @@ def test_favorite_survives_summarize_by_msg_id(tmp_path):
     remaining = mgr.list_favorites(sid)
     assert len(remaining) == 1
     assert remaining[0]["content"] == "a2"
+
+
+def test_edit_message_preserves_history(tmp_path):
+    """Q9：编辑消息内容并保留 edited_from 版本记录。"""
+    mgr = ConvManager(tmp_path)
+    sid = mgr.create_session()
+    msg = mgr.add_message(sid, "assistant", "旧内容")
+    updated = mgr.edit_message(sid, msg["msg_id"], "新内容")
+    assert updated is not None
+    assert updated["content"] == "新内容"
+    assert updated["edited_from"] == ["旧内容"]
+    assert mgr.get_messages(sid)[0]["content"] == "新内容"
+
+    # prepend_versions：重新生成时记录旧回复（新内容未变时不重复记录当前内容）
+    updated2 = mgr.edit_message(sid, msg["msg_id"], "第二版", prepend_versions=["第一版"])
+    assert updated2["edited_from"] == ["第一版", "新内容", "旧内容"]
+
+    # 内容未变但提供前置版本（重新生成场景）仍记录版本
+    updated3 = mgr.edit_message(sid, msg["msg_id"], "第二版", prepend_versions=["旧回复"])
+    assert updated3["edited_from"] == ["旧回复", "第一版", "新内容", "旧内容"]
+
+
+def test_edit_message_not_found(tmp_path):
+    mgr = ConvManager(tmp_path)
+    sid = mgr.create_session()
+    assert mgr.edit_message(sid, "nonexistent", "x") is None
 
 
 # ---------- R4：remove_last_message 回滚 ----------

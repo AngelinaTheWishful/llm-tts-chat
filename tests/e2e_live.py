@@ -388,6 +388,17 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
         except Exception as e:
             check("B10 回收站列表刷新", False, str(e))
 
+    # B10a 盲区：未选择会话时点「恢复会话」不应 500（修复：错误分支补全返回值）
+    if has("restore_trash_handler"):
+        try:
+            r = call("restore_trash_handler", "", timeout=30)
+            val = "".join(str(u) for u in flatten_updates(r))
+            check("B10a 回收站恢复-空选择不报错", "请先选择" in val, val[:40])
+        except Exception as e:
+            check("B10a 回收站恢复-空选择不报错", False, str(e))
+    else:
+        check("B10a 回收站恢复-空选择不报错", False, "端点缺失")
+
     if has("empty_trash_handler"):
         try:
             r = call("empty_trash_handler", timeout=30)
@@ -463,6 +474,37 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
             check("B15 训练面板刷新（空环境）", has_choices, f"updates={len(flat)}")
         except Exception as e:
             check("B15 训练面板刷新（空环境）", False, str(e))
+
+    # B15a 盲区/覆盖：训练面板错误路径（未选实验预览/打包不报 500）
+    if has("preview_training_handler"):
+        try:
+            r = call("preview_training_handler", None, timeout=30)
+            val = "".join(str(u) for u in flatten_updates(r))
+            check("B15a 训练预览-未选实验", "请先选择" in val, val[:40])
+        except Exception as e:
+            check("B15a 训练预览-未选实验", False, str(e))
+    else:
+        check("B15a 训练预览-未选实验", False, "端点缺失")
+
+    if has("pack_training_handler"):
+        try:
+            r = call("pack_training_handler", None, timeout=30)
+            val = "".join(str(u) for u in flatten_updates(r))
+            check("B15b 训练打包-未选实验", "请先选择" in val, val[:40])
+        except Exception as e:
+            check("B15b 训练打包-未选实验", False, str(e))
+    else:
+        check("B15b 训练打包-未选实验", False, "端点缺失")
+
+    if has("save_training_settings_handler"):
+        try:
+            r = call("save_training_settings_handler", "", False, False, False, timeout=30)
+            val = "".join(str(u) for u in flatten_updates(r))
+            check("B15c 训练配置保存", "已保存" in val, val[:40])
+        except Exception as e:
+            check("B15c 训练配置保存", False, str(e))
+    else:
+        check("B15c 训练配置保存", False, "端点缺失")
 
     # 章节八十五：折叠修复验证
     # 折叠改用隐藏 gr.Number(sidebar-collapse-state) + js 切换 DOM（避免 gr.State 触发 Gradio
@@ -549,6 +591,35 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
         )
     except Exception as e:
         check("B21 报告系统", False, str(e))
+
+    # B22 盲区：角色名称为空时点「保存角色」不应 500（修复：错误分支补全返回值）
+    if has("save_character_handler"):
+        try:
+            r = call(
+                "save_character_handler",
+                "",
+                "",  # 空角色名 → CHR-003
+                "你好",
+                "温柔",
+                "柔和",
+                "",
+                "学生",
+                "",
+                "",
+                "",
+                "",
+                "",
+                None,
+                None,
+                timeout=30,
+            )
+            flat = flatten_updates(r)
+            val = "".join(str(u) for u in flat)
+            check("B22 角色保存-空名称不报错", "CHR-003" in val, val[:40])
+        except Exception as e:
+            check("B22 角色保存-空名称不报错", False, str(e))
+    else:
+        check("B22 角色保存-空名称不报错", False, "端点缺失")
 
 
 def run_server_checks():

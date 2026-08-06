@@ -72,3 +72,38 @@ def test_safe_key(tmp_path):
     store = MemoryStore(tmp_path / "memories")
     store.add_entry("用户喜欢猫", scope="character", key="a/b\\c:d*e")
     assert (tmp_path / "memories" / "character" / "a_b_c_d_e" / "memories.json").exists()
+
+
+def test_scope_sanitized(tmp_path):
+    """scope 含路径穿越字符时被净化，防止越界写（修复）。"""
+    store = MemoryStore(tmp_path / "memories")
+    store.add_entry("用户喜欢猫", scope="../../evil", key="x")
+    # 净化后落在 memories/evil/x/memories.json，而非越界目录
+    assert (tmp_path / "memories" / "evil" / "x" / "memories.json").exists()
+    assert not (tmp_path.parent / "evil").exists()
+
+
+def test_concurrent_add_entries(tmp_path):
+    """并发写入记忆不丢更新、不写坏 JSON（并发锁修复）。
+
+    20 个线程写相同文本：去重后应恰好 1 条；若读改写无锁会出现重复/写坏。
+    """
+    import threading
+
+    store = MemoryStore(tmp_path / "memories")
+    errors = []
+
+    def worker(_):
+        try:
+            store.add_entry("用户喜欢弹钢琴", scope="character", key="并发")
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert store.count(scope="character", key="并发") == 1  # 去重后仅 1 条，无重复/写坏

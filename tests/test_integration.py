@@ -125,3 +125,12 @@ def test_send_message_without_character_errors(tmp_path, monkeypatch):
     result = ui.send_message("你好", "中文", "中文")
     assert "error" in result
     assert "角色" in result["error"]
+
+
+def test_config_top_level_array_falls_back_to_default(tmp_path):
+    """config.json 顶层为数组时不崩溃，回退默认配置（修复）。"""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text('["not", "a", "dict"]', encoding="utf-8")
+    cm = ConfigManager(cfg_path)
+    assert cm.get("data_version")  # 默认配置可用
+    # 不抛异常即可（默认配置 active_provider 为空，get_active_provider_config 返回 {}）

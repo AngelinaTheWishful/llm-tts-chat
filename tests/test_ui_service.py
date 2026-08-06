@@ -153,3 +153,25 @@ def test_last_audio_file_returns_existing_file(tmp_path):
     path = ui._last_audio_file(session)
     assert path is not None
     assert Path(path).is_file()
+
+
+def test_last_audio_file_rejects_path_traversal(tmp_path):
+    """audio_file 含 ../ 越界路径时被拒绝，不返回会话目录外文件（修复）。"""
+    import json
+
+    ui = make_service(tmp_path)
+    session = ui.new_session("问候角色")["session_id"]
+
+    # 越界文件（会话目录外）
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"WAV")
+
+    # 写入含 ../../ 的 audio_file 字段
+    messages = ui.conv_mgr.get_messages(session)
+    messages.append({"role": "assistant", "content": "x", "audio_file": "../../outside.wav"})
+    import pathlib
+
+    sdir = pathlib.Path(ui.conv_mgr.dir) / session
+    (sdir / "messages.json").write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
+
+    assert ui._last_audio_file(session) is None  # 越界路径被拒绝

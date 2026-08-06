@@ -58,7 +58,8 @@ def test_cleanup_removes_old_reports(repdir):
         os.utime(p, (old_ts, old_ts))
     fresh = repdir / f"run_report_{today}.txt"
     fresh.write_text("new", encoding="utf-8")
-    reporter._cleanup()
+    # Q13：清理默认节流，测试用 force=True 强制清理
+    reporter._cleanup(force=True)
     assert not (repdir / f"run_report_{old}.txt").exists()
     assert not (repdir / f"run_report_{old}.jsonl").exists()
     assert fresh.exists()
