@@ -2,7 +2,7 @@
 
 基于 Gradio 的角色扮演聊天应用，集成 LLM（OpenAI 兼容 API）与 GPT-SoVITS 语音合成。
 
-> **v1.2.0 已发布**（2026-08-05）· [GitHub Releases](https://github.com/AngelinaTheWishful/llm-tts-chat/releases)
+> **v1.2.1 已发布**（2026-08-06）· [GitHub Releases](https://github.com/AngelinaTheWishful/llm-tts-chat/releases)
 
 ## 功能概述
 
@@ -70,7 +70,7 @@
 - 分支策略: main（稳定） + dev（开发），禁止直接提交 main
 - Commit 规范: Conventional Commits（英文标题 + 中文正文）
 - 代码规范: PEP 8 + ruff（`ruff check app.py modules/ tests/`）
-- 测试: `pytest tests/ -v`（160 项单元/集成测试）
+- 测试: `pytest tests/ -v`（165 项单元/集成测试）
 - 开发流程详见 [开发工作流程(机密禁止上传).md](开发工作流程(机密禁止上传).md)
 
 ## 开发文档

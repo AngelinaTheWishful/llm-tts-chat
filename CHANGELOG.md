@@ -2,6 +2,21 @@
 
 本文件记录所有已发布版本的应用变更。
 
+## [v1.2.1] - 2026-08-06
+
+### 修复
+
+- **训练模块产物清理计数虚增**：`cleanup_intermediates` 原在 `shutil.rmtree(ignore_errors=True)` 静默失败时仍计入 `cleaned`；现删除后以 `target.exists()` 复核，仅统计实际删除成功的项
+- **训练模块实验名时间戳后缀误剥离**：`restore_archive` 从 zip 文件名解析实验名时，实验名自身以 `_YYYYMMDD_HHMMSS` 结尾会被错误剥离；现贪婪匹配末尾 15 位时间戳，实验名完整保留
+- **训练模块归档检测 glob 元字符误匹配**：`has_archive` 原直接拼接实验名到 glob 模式，实验名含 `[`/`*` 时误匹配；现用 `glob.escape` 转义
+- **训练 CLI 配置加载依赖工作目录**：`training_cli._build_ops` 原用 `ConfigManager()` 相对 CWD 加载 `config.json`，从其他目录运行 `train_pack.bat` 时 `gsv_training` 配置（gsv_root/archive_dir/restore_dir）丢失；现显式基于项目根加载
+- **train_pack.bat 无 pushd + 退出码丢失**：原脚本不切换工作目录且以 `pause` 结尾吞掉 CLI 退出码；现 `pushd` 到项目根、保存 `%ERRORLEVEL%`、`exit /b` 返回，便于自动化判断成败
+- **训练音色串角色**：切换角色时「训练音色」下拉未重置，保存新角色会把上一角色的音色权重写入其音色预设；现 `load_character_to_editor` 补第 13 项输出将下拉重置为 None
+
+### 新增
+
+- **训练模块回归测试**：新增 5 项（时间戳后缀实验名解析 / glob 特殊字符 / 清理计数仅统计实际删除 / CLI 项目根配置加载 + 命令行优先 / 角色加载重置训练音色），pytest 全量 165 项
+
 ## [v1.2.0] - 2026-08-05
 
 ### 新增
