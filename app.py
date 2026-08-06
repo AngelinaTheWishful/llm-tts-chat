@@ -105,7 +105,9 @@ body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: no
 }}
 #chat-area.chat-bg-on::before {{ display: block; }}
 #chat-area > * {{ position: relative; z-index: 1; }}
-/* 聊天容器背景透明，保证角色背景图透出（Gradio Chatbot 容器默认无背景色） */
+/* 聊天容器背景透明：Gradio 组件外层 .block 有不透明背景（--block-background-fill），
+   必须一并透明，否则会盖住 #chat-area 的背景图与遮罩 */
+#chat-area > *,
 #chat-area .chatbot,
 #chat-area .chatbot-wrap,
 #chat-area .messages {{ background: transparent !important; }}
@@ -614,10 +616,13 @@ def save_character_handler(
                 rs["sovits_model"] = restored["sovits"]
 
     # 章节九十二：聊天背景上传（gr.File 保留动图原始格式）
+    # 字段写入规范化文件名 background.{ext}（与 update_background 落盘名一致），
+    # 避免写成原始上传文件名导致字段指向不存在文件（仅靠固定文件名回退兜底）
     if background_upload:
         try:
-            bg_name = Path(background_upload).name
-            character["background"] = bg_name
+            ext = Path(background_upload).suffix.lstrip(".").lower()
+            if ext:
+                character["background"] = f"background.{ext}"
         except Exception:
             pass
 

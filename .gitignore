@@ -34,6 +34,13 @@ theme_config.json
 # 训练归档数据（不提交，仅提交警示文件占位）
 gsv_training/archives/*
 gsv_training/restored/*
+# 予愿安洁莉娜语音语料（机密用户数据，不提交）
+gsv_training/aglna2_cn/
+gsv_training/aglna2_jp/
+gsv_training/aglna2_voice_清单与原文.md
+
+# 自动备份数据（不提交）
+backup/*
 
 # 文档归档副本（运行日志不提交，文档/机密保留警示文件）
 dev_archive/logs/*
