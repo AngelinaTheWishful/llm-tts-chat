@@ -9,6 +9,8 @@ select = ["E", "F", "W", "I", "N", "UP"]
 "__init__.py" = ["F401"]
 # 迁移脚本按需求命名 vX.Y_to_vX.Y.py（动态加载，非 Python 模块）
 "migrations/*" = ["N999"]
+# dev_archive 为机密归档（含内部工具脚本/长数据行），不按应用代码严格限制行宽
+"dev_archive/**" = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"
