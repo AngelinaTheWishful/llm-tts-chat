@@ -165,15 +165,21 @@ class CharManager(BaseManager):
     # ---------- 保存 / 删除 ----------
 
     def save_character(self, char: dict) -> None:
-        """保存/更新角色配置（写入 character.json）。"""
+        """保存/更新角色配置（写入 character.json）。
+
+        章节九十四：落盘前剥离 `_` 前缀的运行时注入字段
+        （_dir/_portrait/_portrait_thumb/_ref_audio/_greeting_audio/_voice_sample/_background），
+        仅保留用户可编辑的配置字段，避免本机绝对路径泄漏与跨机失效。
+        """
         char_dir = self.get_character_dir(char.get("name", ""))
         if not char_dir:
             char_dir = self.dir / self._sanitize_name(char.get("name", "角色"))
         char_dir.mkdir(parents=True, exist_ok=True)
 
+        persist = {k: v for k, v in char.items() if not k.startswith("_")}
         json_path = char_dir / "character.json"
         json_path.write_text(
-            json.dumps(char, ensure_ascii=False, indent=2),
+            json.dumps(persist, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         self.log("info", f"角色已保存: {char.get('name')}")

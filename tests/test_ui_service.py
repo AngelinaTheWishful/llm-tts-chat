@@ -66,6 +66,16 @@ class FakeTTS:
     def check_api(self):
         return True
 
+    def list_gpt_models(self, gsv_root):
+        from modules.tts_client import TTSClient
+
+        return TTSClient.list_gpt_models(gsv_root)
+
+    def list_sovits_models(self, gsv_root):
+        from modules.tts_client import TTSClient
+
+        return TTSClient.list_sovits_models(gsv_root)
+
 
 class FakeTTSOffline:
     def synthesize_normalized(self, *args, **kwargs):
@@ -73,6 +83,16 @@ class FakeTTSOffline:
 
     def check_api(self):
         return False
+
+    def list_gpt_models(self, gsv_root):
+        from modules.tts_client import TTSClient
+
+        return TTSClient.list_gpt_models(gsv_root)
+
+    def list_sovits_models(self, gsv_root):
+        from modules.tts_client import TTSClient
+
+        return TTSClient.list_sovits_models(gsv_root)
 
 
 def make_service(tmp_path, tts=None):
@@ -200,3 +220,33 @@ def test_select_character_avatar_empty_when_missing(tmp_path):
     result = ui.select_character("问候角色")  # make_service 未建头像文件
     assert "error" not in result
     assert result["avatar"] == ""
+
+
+def test_refresh_gsv_root_success(tmp_path):
+    """章节九十四：refresh_gsv_root 全量刷新——探测成功返回路径并更新状态。"""
+    gsv = tmp_path / "GPT-SoVITS-v2pro-test"
+    gsv.mkdir(parents=True)
+    (gsv / "api_v2.py").write_text("", encoding="utf-8")
+    (gsv / "GPT_weights_v2Pro").mkdir(parents=True)
+    (gsv / "GPT_weights_v2Pro" / "a.ckpt").write_bytes(b"")
+    (gsv / "SoVITS_weights_v2Pro").mkdir(parents=True)
+    (gsv / "SoVITS_weights_v2Pro" / "a.pth").write_bytes(b"")
+
+    ui = make_service(tmp_path)
+    ui.config_mgr.set_top_level("gsv_root", str(gsv))
+    result = ui.refresh_gsv_root()
+    assert result["ok"] is True
+    assert result["path"] == str(gsv)
+    assert result["source"] == "config"
+    assert "GPT 模型 1 个" in result["message"]
+    assert "SoVITS 模型 1 个" in result["message"]
+
+
+def test_refresh_gsv_root_fail_message(tmp_path):
+    """章节九十四：探测失败返回 CFG-008 提示。"""
+    ui = make_service(tmp_path)
+    ui.config_mgr.set_top_level("gsv_root", "")
+    result = ui.refresh_gsv_root()
+    assert result["ok"] is False
+    assert result["path"] == ""
+    assert "[CFG-008]" in result["message"]

@@ -1,10 +1,10 @@
-# LLM Roleplay Chat + GPT-SoVITS TTS
+﻿# LLM Roleplay Chat + GPT-SoVITS TTS
 
 **Languages:** [中文](README.md) · [日本語](README.ja.md)
 
 A Gradio-based roleplay chat application that integrates an LLM (OpenAI-compatible API) with GPT-SoVITS voice synthesis.
 
-> **v1.3.5 released** (2026-08-07) · [GitHub Releases](https://github.com/AngelinatheMellowWish/llm-tts-chat/releases)
+> **v1.3.6 released** (2026-08-07) · [GitHub Releases](https://github.com/AngelinatheMellowWish/llm-tts-chat/releases)
 
 ## Features
 
@@ -15,6 +15,7 @@ A Gradio-based roleplay chat application that integrates an LLM (OpenAI-compatib
 - **Character card import**: auto-detects and imports TavernAI (PNG/JSON), RisuAI, Chub, and Character.AI cards (with avatar)
 - **Character chat background** (v1.3.1): place a background image in the character folder (`background.png` or the `background` field in `character.json`); the chat-area background switches instantly when you select a character. Supports PNG/JPG/JPEG/WebP/GIF (animated), ≤200MB. Adjustable overlay opacity/color (auto light/dark or manual), global enable switch, upload with in-editor preview
 - **Character avatar in chat header** (v1.3.5): a fixed header at the top-left of the chat window shows the current character's `portrait.png` avatar + name (does not scroll with messages or cover the chat background); falls back to a circular initial placeholder when no portrait exists; size can be switched between 128/256px from the sidebar and is persisted
+- **TTS root path auto-detection** (v1.3.6): the GPT-SoVITS root is auto-detected at startup (config first → startup report → read-only sibling scan) and written back to `config.json` on success; a "Re-detect" button performs a one-click full refresh (re-detect root + re-scan weights + re-apply the current character's voice preset); character JSON no longer persists local absolute paths
 - **Mobile responsive**: ≤900px auto-stacks into a vertical layout
 - **Character editor**: WebUI form editing (personality / quirks / background / CoT / Lorebook / avatar)
 - **Message favorites / search / stats**: star favorites, in-session search, global stats dashboard

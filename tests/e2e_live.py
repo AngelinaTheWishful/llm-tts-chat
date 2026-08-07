@@ -730,6 +730,39 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
     else:
         check("B24 聊天窗口头像", False, "端点缺失")
 
+    # B26 章节九十四：gsv_root 统一自动探测与前端刷新（未配置失败提示 / 配置有效成功回填）
+    if has("refresh_gsv_root_handler") and has("save_settings_handler"):
+        try:
+            # 未配置（gsv_root 为空）→ 探测失败返回 CFG-008 提示
+            r = call("refresh_gsv_root_handler", timeout=30)
+            val = "".join(str(u) for u in flatten_updates(r))
+            check("B26a 刷新-未配置失败提示", "[CFG-008]" in val, val[:60])
+            # 配置有效 → 刷新成功并回填路径（cfg_gsv_root 文本框更新）
+            fake_gsv = work / "fake_gsv"
+            fake_gsv.mkdir(exist_ok=True)
+            (fake_gsv / "api_v2.py").write_text("", encoding="utf-8")
+            call(
+                "save_settings_handler",
+                str(fake_gsv),
+                "http://127.0.0.1:9880",
+                "test",
+                "http://127.0.0.1:1",
+                "",
+                "m",
+                128,
+                0.8,
+                "中文",
+                timeout=30,
+            )
+            r3 = call("refresh_gsv_root_handler", timeout=30)
+            val3 = "".join(str(u) for u in flatten_updates(r3))
+            check("B26b 刷新-配置有效成功", "已就绪" in val3, val3[:80])
+            check("B26c 刷新-回填 gsv_root 文本框", fake_gsv.name in val3, val3[:80])
+        except Exception as e:
+            check("B26 gsv_root 刷新", False, str(e))
+    else:
+        check("B26 gsv_root 刷新", False, "端点缺失")
+
 
 def run_server_checks():
     work = Path(tempfile.mkdtemp(prefix="llm_tts_e2e_"))

@@ -12,6 +12,7 @@ import os
 import threading
 from pathlib import Path
 
+from modules import path_resolver
 from modules.base_manager import BaseManager
 
 DATA_VERSION = "1.0"
@@ -226,6 +227,34 @@ class ConfigManager(BaseManager):
         with self._lock:
             self._config = new_config
             self.save()
+
+    def set_top_level(self, key: str, value) -> None:
+        """更新顶层配置项并立即保存（写锁 + 原子写入）。"""
+        with self._lock:
+            self._config[key] = value
+            self.save()
+
+    def resolve_gsv_root(self, project_root=None, write_back: bool = True) -> tuple[str, str]:
+        """启动/前端刷新调用：三级探测 gsv_root（章节九十四）。
+
+        - 配置已存且目录有效 → 直接使用（来源 config）
+        - 为空/失效 → 读 startup_report → 同级只读扫描，成功且 write_back=True 时
+          自动写回 config.json.gsv_root（写锁 + 原子写入）
+        - 全部失败 → 返回 ("", "")，保留 config 旧值
+
+        Returns:
+            (路径或空串, 来源)。来源：config / startup_report / scan / ""
+        """
+        root = project_root or Path(self.path).resolve().parent
+        path, source = path_resolver.resolve_gsv_root(root, self.get("gsv_root", ""))
+        if write_back and path and source != "config":
+            self.set_top_level("gsv_root", path)
+        return path, source
+
+    def get_effective_gsv_root(self) -> str:
+        """返回训练模块应使用的 gsv_root：gsv_training 为空时继承主 gsv_root（章节九十四）。"""
+        tr = (self.get("gsv_training", {}) or {}).get("gsv_root", "") or ""
+        return tr or self.get("gsv_root", "") or ""
 
     def get_active_provider_config(self) -> dict:
         """返回当前活动提供商的完整配置（单一数据源规则）。"""

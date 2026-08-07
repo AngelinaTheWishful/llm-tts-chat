@@ -332,8 +332,9 @@ tts_client = TTSClient(config_mgr.get("tts", {}).get("api_base_url", "http://127
 ui_service = UiService(config_mgr, char_mgr, conv_mgr, tts_client)
 
 _gt_cfg = config_mgr.get("gsv_training", {})
+# 章节九十四：训练根路径为空时自动继承主 gsv_root
 training_ops = TrainingOps(
-    gsv_root=_gt_cfg.get("gsv_root", ""),
+    gsv_root=config_mgr.get_effective_gsv_root(),
     archive_dir=_gt_cfg.get("archive_dir", ""),
     restore_dir=_gt_cfg.get("restore_dir", ""),
 )
@@ -1175,7 +1176,9 @@ def save_training_settings_handler(gsv_root, cleanup_after, auto_detect, auto_fu
     gt["auto_detect"] = bool(auto_detect)
     gt["auto_full"] = bool(auto_full)
     config_mgr.replace(cfg)
-    training_ops.gsv_root = Path(gsv_root).resolve() if gsv_root else Path("")
+    # 章节九十四：训练根路径为空时自动继承主 gsv_root（保存后即时生效）
+    effective = config_mgr.get_effective_gsv_root()
+    training_ops.gsv_root = Path(effective).resolve() if effective else Path("")
     gr.Info("🟢 训练配置已保存，即时生效")
     return gr.update(value="🟢 训练配置已保存，即时生效")
 
@@ -1316,6 +1319,28 @@ def save_settings_handler(
     logger.info(f"侧栏配置已保存，TTS 地址: {tts_client.base}")
     gr.Info("🟢 配置已保存，即时生效")
     return gr.update(value="🟢 配置已保存，即时生效")
+
+
+def refresh_gsv_root_handler():
+    """章节九十四：前端「重新探测」——全量刷新 gsv_root。
+
+    重探测根路径（成功自动写回 config.json）+ 重扫权重列表 + 重应用当前角色音色预设。
+    返回 (配置面板 gsv_root 文本框更新, 状态栏文字, 刷新结果提示)。
+    """
+    result = ui_service.refresh_gsv_root()
+    if result.get("ok"):
+        gr.Info("🟢 " + result["message"])
+        return (
+            gr.update(value=result["path"]),
+            _status_text(),
+            gr.update(value="🟢 " + result["message"], visible=True),
+        )
+    gr.Info("🔴 " + result["message"])
+    return (
+        gr.update(),
+        _status_text(),
+        gr.update(value="🔴 " + result["message"], visible=True),
+    )
 
 
 def _status_text() -> str:
@@ -1572,6 +1597,11 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                     cfg_gsv_root = gr.Textbox(
                         label="GPT-SoVITS 本体路径", value=config_mgr.get("gsv_root", "")
                     )
+                    # 章节九十四：配置面板「重新探测」按钮（自动探测 + 写回 config.json）
+                    gsv_refresh_btn1 = gr.Button(
+                        "🔍 重新探测 GPT-SoVITS 路径（自动检测并写回）", scale=1
+                    )
+                    gsv_refresh_status = gr.Markdown(visible=False)
                     cfg_tts_url = gr.Textbox(
                         label="TTS API 地址",
                         value=config_mgr.get("tts", {}).get(
@@ -1778,6 +1808,8 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                     tr_restore_btn = gr.Button(i18n.t("恢复归档"))
                     tr_status = gr.Markdown(visible=False)
 
+                # 章节九十四：侧栏状态栏区域「重新探测」按钮（与配置面板共用同一 handler）
+                gsv_refresh_btn2 = gr.Button("🔍 重新探测 GPT-SoVITS 路径")
                 gr.Markdown("### " + i18n.t("状态"))
                 status_text = gr.Markdown(_status_text())
 
@@ -2148,6 +2180,10 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
         inputs=[cfg_tts_url, cfg_provider, cfg_base_url, cfg_api_key, cfg_model],
         outputs=[cfg_test_status],
     )
+    # 章节九十四：前端「重新探测」按钮（配置面板 + 状态栏区域，同一 handler）
+    _gsv_refresh_outputs = [cfg_gsv_root, status_text, gsv_refresh_status]
+    gsv_refresh_btn1.click(fn=refresh_gsv_root_handler, outputs=_gsv_refresh_outputs)
+    gsv_refresh_btn2.click(fn=refresh_gsv_root_handler, outputs=_gsv_refresh_outputs)
     # 章节八十八 88.4：操作指引按钮（可关闭）
     main_help_btn.click(
         fn=main_help_handler,
@@ -2270,6 +2306,30 @@ def _main_impl(args: argparse.Namespace) -> None:
         except Exception as e:
             logger.warning(f"启动自动备份失败: {e}")
             write_entry("startup_report", "自动备份", "WARN", detail=str(e)[:120])
+
+    # 章节九十四：启动时自动探测 gsv_root（配置优先 → startup_report → 同级只读扫描），
+    # 成功自动写回 config.json；失败保留旧值并告警（前端可点击「重新探测」或手动输入）
+    gsv_path, gsv_source = config_mgr.resolve_gsv_root()
+    if gsv_path:
+        logger.info(f"GPT-SoVITS 根路径已就绪（来源：{gsv_source}）: {gsv_path}")
+        write_entry(
+            "startup_report",
+            "探测 GPT-SoVITS 路径",
+            "OK",
+            detail=f"{gsv_path}（{gsv_source}）",
+        )
+    else:
+        logger.warning(
+            "[CFG-008] 未找到 GPT-SoVITS 目录（含 api_v2.py），TTS 相关功能不可用，"
+            "可点击「重新探测」或在前端手动输入路径"
+        )
+        write_entry(
+            "startup_report",
+            "探测 GPT-SoVITS 路径",
+            "WARN",
+            code="CFG-008",
+            detail="未找到含 api_v2.py 的 GPT-SoVITS 目录",
+        )
 
     with gr.Blocks(
         title="LLM 角色扮演聊天",

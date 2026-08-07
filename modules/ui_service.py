@@ -662,6 +662,47 @@ class UiService(BaseManager):
         self.tts_healthy = self.tts_client.check_api()
         return self.tts_healthy
 
+    # ---------- gsv_root 统一管理（章节九十四） ----------
+
+    def refresh_gsv_root(self) -> dict:
+        """前端「重新探测」一键全量刷新。
+
+        重探测 gsv_root（成功自动写回 config.json）+ 重扫 GPT/SoVITS 权重列表 +
+        重解析当前角色参考音频 + 重应用音色预设。
+        """
+        path, source = self.config_mgr.resolve_gsv_root()
+        if not path:
+            return {
+                "ok": False,
+                "path": "",
+                "source": "",
+                "message": "[CFG-008] 未找到 GPT-SoVITS 目录（含 api_v2.py），"
+                "请确认其与项目位于同一父目录，或在前端手动输入路径",
+            }
+        gpt_models = self.tts_client.list_gpt_models(path)
+        sovits_models = self.tts_client.list_sovits_models(path)
+        preset_info = ""
+        if self.active_character:
+            char = self.char_mgr.get_character(self.active_character)
+            if char:
+                self.char_mgr.apply_preset(char, self.tts_client, gsv_root=path)
+                preset_info = f"，已应用角色「{self.active_character}」音色预设"
+        src = {
+            "config": "已有配置",
+            "startup_report": "启动报告",
+            "scan": "同级目录扫描",
+        }.get(source, source)
+        return {
+            "ok": True,
+            "path": path,
+            "source": source,
+            "message": (
+                f"GPT-SoVITS 路径已就绪（来源：{src}）：{path}"
+                f"（GPT 模型 {len(gpt_models)} 个 / "
+                f"SoVITS 模型 {len(sovits_models)} 个{preset_info}）"
+            ),
+        }
+
     # ---------- 工具 ----------
 
     def _last_audio_file(self, session_id: str) -> str | None:

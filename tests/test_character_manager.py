@@ -58,6 +58,36 @@ def test_save_and_update_character(tmp_path):
     assert char["greeting"] == "你好"
 
 
+def test_save_character_strips_runtime_fields(tmp_path):
+    """章节九十四：save_character 剥离 `_` 前缀运行时绝对路径字段（仅内存注入）。"""
+    mgr = CharManager(tmp_path)
+    char = {
+        **SAMPLE_CHAR,
+        "_dir": "C:/leak/path",
+        "_portrait": "C:/leak/portrait.png",
+        "_portrait_thumb": "C:/leak/portrait_thumb.png",
+        "_ref_audio": "C:/leak/ref.wav",
+        "_greeting_audio": "C:/leak/greeting.wav",
+        "_voice_sample": "C:/leak/voice_sample.wav",
+        "_background": "C:/leak/background.jpg",
+    }
+    mgr.save_character(char)
+    char_dir = tmp_path / "测试角色"
+    persisted = json.loads((char_dir / "character.json").read_text(encoding="utf-8"))
+    for key in (
+        "_dir",
+        "_portrait",
+        "_portrait_thumb",
+        "_ref_audio",
+        "_greeting_audio",
+        "_voice_sample",
+        "_background",
+    ):
+        assert key not in persisted
+    assert persisted["name"] == "测试角色"
+    assert persisted["greeting"] == "你好"
+
+
 def test_delete_character_moves_to_trash(tmp_path):
     make_char_dir(tmp_path, "待删角色")
     mgr = CharManager(tmp_path, trash_dir=tmp_path.parent / "trash" / "characters")

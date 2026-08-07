@@ -62,6 +62,11 @@ ERROR_CODES = {
         "desc": "LLM 接口或服务不可用（404）",
         "hint": "检查 base_url 是否填写正确、服务是否支持该路径",
     },
+    "CFG-008": {
+        "module": "配置",
+        "desc": "未找到 GPT-SoVITS 目录（含 api_v2.py）",
+        "hint": "确认 GPT-SoVITS 与项目位于同一父目录，或在前端手动输入路径",
+    },
     # LLM
     "LLM-001": {"module": "LLM", "desc": "LLM 连接失败", "hint": "检查 base_url 与网络/代理"},
     "LLM-002": {"module": "LLM", "desc": "LLM 请求超时", "hint": "网络慢或服务繁忙，稍后重试"},
