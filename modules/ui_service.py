@@ -648,9 +648,11 @@ class UiService(BaseManager):
         self.char_mgr.apply_preset(char, self.tts_client, gsv_root=gsv_root)
         # 章节九十二：返回角色聊天背景路径（character.json background 字段 > 固定文件名），
         # 由 app.py 层做 gr.set_static_paths 单文件注册后再供前端 JS 应用
+        # 章节九十三：同时返回角色头像路径（portrait.png 主图，无则空串，前端回落首字占位）
         return {
             "character": name,
             "background": char.get("_background", "") or "",
+            "avatar": char.get("_portrait", "") or "",
             "message": f"已切换到角色: {name}",
         }
 

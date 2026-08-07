@@ -4,7 +4,7 @@
 
 Gradio ベースのロールプレイチャットアプリで、LLM（OpenAI 互換 API）と GPT-SoVITS 音声合成を統合しています。
 
-> **v1.3.4 リリース**（2026-08-06）· [GitHub Releases](https://github.com/AngelinatheMellowWish/llm-tts-chat/releases)
+> **v1.3.5 リリース**（2026-08-07）· [GitHub Releases](https://github.com/AngelinatheMellowWish/llm-tts-chat/releases)
 
 ## 機能概要
 
@@ -14,6 +14,7 @@ Gradio ベースのロールプレイチャットアプリで、LLM（OpenAI 互
 - **キャラクターシステム**：JSON 設定 + ポートレート + 参照音声 + Lorebook 世界観ナレッジベース
 - **キャラクターカードインポート**：TavernAI（PNG/JSON）、RisuAI、Chub、Character.AI カードを自動検出してインポート（アバター付き）
 - **キャラクターチャット背景**（v1.3.1）：キャラクターフォルダに背景画像（`background.png` または `character.json` の `background` フィールド）を置くと、キャラクター選択時にチャット領域の背景が即座に切り替わります。PNG/JPG/JPEG/WebP/GIF（アニメーション対応）、≤200MB。オーバーレイの不透明度・配色を調整可能（ライト/ダーク自動 + 手動選択）、有効化スイッチ、編集パネルでのアップロードとプレビュー対応
+- **チャットヘッダーのキャラクターアバター**（v1.3.5）：チャットウィンドウ左上の固定ヘッダーに、現在のキャラクターの `portrait.png` アバターと名前を表示（メッセージと一緒にスクロールせず、チャット背景も覆いません）。ポートレートがない場合は名前の先頭文字の円形プレースホルダーを表示。サイズはサイドバーで 128/256px を切り替え可能で、永続化されます
 - **モバイル対応**：≤900px で自動的に上下レイアウトへ切替
 - **キャラクター編集**：WebUI フォーム編集（性格 / 口癖 / 背景 / CoT / Lorebook / アバター）
 - **メッセージのお気に入り / 検索 / 統計**：スター付きお気に入り、セッション内検索、全体統計ダッシュボード
@@ -75,7 +76,7 @@ Gradio ベースのロールプレイチャットアプリで、LLM（OpenAI 互
 - ブランチ戦略：main（安定版）+ dev（開発版）、main への直接コミットは禁止
 - コミット規約：Conventional Commits
 - コード規約：PEP 8 + ruff（`ruff check app.py modules/ tests/`）
-- テスト：`pytest tests/ -v`（196 のユニット/統合テスト）
+- テスト：`pytest tests/ -v`（203 のユニット/統合テスト）
 - 詳細な開発ドキュメントは機密であり、ローカルでのみ管理され、このリポジトリには公開されません
 
 ## ライセンス

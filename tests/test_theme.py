@@ -99,3 +99,42 @@ def test_chat_overlay_save_persists(tmp_path):
     reloaded = Theme(cfg)
     assert reloaded.overlay()["enabled"] is False
     assert reloaded.overlay()["opacity"] == 0.2
+
+
+# ---------- 章节九十三：聊天窗口头像（chat_avatar） ----------
+
+
+def test_chat_avatar_size_defaults(tmp_path):
+    theme = Theme(tmp_path / "nonexistent.json")
+    assert theme.avatar_size() == 128
+
+
+def test_chat_avatar_size_partial_merge(tmp_path):
+    cfg = tmp_path / "theme_config.json"
+    cfg.write_text(json.dumps({"chat_avatar": {"size": 256}}), encoding="utf-8")
+    theme = Theme(cfg)
+    assert theme.avatar_size() == 256
+
+
+def test_chat_avatar_size_invalid_falls_back(tmp_path):
+    cfg = tmp_path / "theme_config.json"
+    cfg.write_text(json.dumps({"chat_avatar": {"size": 999}}), encoding="utf-8")
+    theme = Theme(cfg)
+    assert theme.avatar_size() == 128
+
+
+def test_chat_avatar_size_injected_into_css(tmp_path):
+    cfg = tmp_path / "theme_config.json"
+    cfg.write_text(json.dumps({"mode": "light", "chat_avatar": {"size": 256}}), encoding="utf-8")
+    theme = Theme(cfg)
+    css = theme.to_css()
+    assert "--chat-avatar-size: 256px" in css
+
+
+def test_chat_avatar_size_save_persists(tmp_path):
+    cfg = tmp_path / "theme_config.json"
+    theme = Theme(cfg)
+    theme.config["chat_avatar"] = {"size": 256}
+    theme.save()
+    reloaded = Theme(cfg)
+    assert reloaded.avatar_size() == 256

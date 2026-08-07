@@ -667,6 +667,58 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
     else:
         check("B23 角色聊天背景", False, "端点缺失")
 
+    # B24 章节九十三：聊天窗口头像——头像状态返回/尺寸持久化/头像经 /file= 加载
+    if has("select_character_handler") and has("save_chat_avatar_size_handler"):
+        try:
+            # 写入 1x1 PNG 作为角色头像，验证 select_character 返回头像状态与 /file= 加载
+            import base64 as _b64
+
+            av_dir = work / "characters" / "暴行"
+            av_dir.mkdir(parents=True, exist_ok=True)
+            one_px = _b64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            )
+            (av_dir / "portrait.png").write_bytes(one_px)
+            r = call("select_character_handler", "暴行", timeout=30)
+            avatar_state = ""
+            if isinstance(r, (list, tuple)) and len(r) >= 3:
+                item = r[2]
+                if isinstance(item, dict):
+                    avatar_state = str(item.get("value", "") or "")
+                else:
+                    avatar_state = str(item or "")
+            av_path = ""
+            av_name = ""
+            if avatar_state:
+                try:
+                    av_obj = json.loads(avatar_state)
+                    av_path = av_obj.get("path", "")
+                    av_name = av_obj.get("name", "")
+                except Exception:
+                    pass
+            check("B24a 角色切换返回头像路径", av_path.endswith("portrait.png"), f"av={av_path}")
+            check("B24b 头像状态含角色名", av_name == "暴行", f"name={av_name}")
+            # 头像尺寸持久化
+            r2 = call("save_chat_avatar_size_handler", 256, timeout=30)
+            flat2 = flatten_updates(r2)
+            val2 = "".join(str(u) for u in flat2)
+            check("B24c 头像尺寸保存", "256px" in val2, val2[:40])
+            # 头像静态注册后 /file= 可访问
+            if av_path:
+                import urllib.request as _ur
+                from urllib import parse as _urlparse
+
+                url = base + "/file=" + _urlparse.quote(av_path.replace("\\", "/"))
+                with _ur.urlopen(url, timeout=15) as resp:
+                    ok_serve = resp.status == 200
+                check("B24d 头像经 /file= 加载", ok_serve, f"status={resp.status}")
+            else:
+                check("B24d 头像经 /file= 加载", False, "未获取到头像路径")
+        except Exception as e:
+            check("B24 聊天窗口头像", False, str(e))
+    else:
+        check("B24 聊天窗口头像", False, "端点缺失")
+
 
 def run_server_checks():
     work = Path(tempfile.mkdtemp(prefix="llm_tts_e2e_"))
@@ -712,10 +764,7 @@ def main():
     run_server_checks()
     passed = sum(1 for _, ok in RESULTS if ok)
     failed = len(RESULTS) - passed
-    log(
-        f"===== 结果: {passed}/{len(RESULTS)} 通过, {failed} 失败 "
-        f"({time.time() - t0:.1f}s) ====="
-    )
+    log(f"===== 结果: {passed}/{len(RESULTS)} 通过, {failed} 失败 ({time.time() - t0:.1f}s) =====")
     sys.exit(1 if failed else 0)
 
 

@@ -20,6 +20,11 @@ DEFAULT_CHAT_OVERLAY = {
     "color": None,
 }
 
+# 章节九十三：聊天窗口头像（chat_avatar）默认配置
+DEFAULT_CHAT_AVATAR = {
+    "size": 128,
+}
+
 # theme_config.json 写入锁：主题切换与「聊天背景」折叠栏共用，防并发丢更新（92.7 #3）
 THEME_WRITE_LOCK = threading.Lock()
 
@@ -89,6 +94,11 @@ class Theme:
         if isinstance(merged.get("chat_overlay"), dict):
             _deep_merge(overlay, merged["chat_overlay"])
         merged["chat_overlay"] = overlay
+        # 章节九十三：chat_avatar 顶层节（聊天窗口头像尺寸），缺失时补默认
+        avatar = deepcopy(DEFAULT_CHAT_AVATAR)
+        if isinstance(merged.get("chat_avatar"), dict):
+            _deep_merge(avatar, merged["chat_avatar"])
+        merged["chat_avatar"] = avatar
         return merged
 
     def reload(self) -> None:
@@ -106,6 +116,15 @@ class Theme:
     def overlay(self) -> dict:
         """返回 chat_overlay 配置（遮罩/开关）。"""
         return self.config.get("chat_overlay", deepcopy(DEFAULT_CHAT_OVERLAY))
+
+    def avatar_size(self) -> int:
+        """返回聊天窗口头像尺寸（128/256，章节九十三）。"""
+        av = self.config.get("chat_avatar", DEFAULT_CHAT_AVATAR)
+        try:
+            size = int(av.get("size", DEFAULT_CHAT_AVATAR["size"]))
+        except (TypeError, ValueError):
+            size = DEFAULT_CHAT_AVATAR["size"]
+        return size if size in (128, 256) else DEFAULT_CHAT_AVATAR["size"]
 
     def to_css(self) -> str:
         """将主题配置转换为 CSS 字符串，注入 Gradio。
@@ -157,16 +176,17 @@ class Theme:
         bg = c.get("chat_background", {}).get("value", "#F0F0F0")
         css = f"""
         :root {{
-            --primary-color: {c.get('primary_color', '#4A90D9')};
-            --bg-color: {c.get('background_color', '#F5F5F5')};
-            --user-bubble: {c.get('user_bubble_color', '#95EC69')};
-            --ai-bubble: {c.get('ai_bubble_color', '#FFFFFF')};
-            --text-color: {c.get('text_color', '#333333')};
-            --timestamp-color: {c.get('timestamp_color', '#999999')};
-            --font-size: {c.get('font_size', '14px')};
-            --border-radius: {c.get('border_radius', '18px')};
+            --primary-color: {c.get("primary_color", "#4A90D9")};
+            --bg-color: {c.get("background_color", "#F5F5F5")};
+            --user-bubble: {c.get("user_bubble_color", "#95EC69")};
+            --ai-bubble: {c.get("ai_bubble_color", "#FFFFFF")};
+            --text-color: {c.get("text_color", "#333333")};
+            --timestamp-color: {c.get("timestamp_color", "#999999")};
+            --font-size: {c.get("font_size", "14px")};
+            --border-radius: {c.get("border_radius", "18px")};
             --chat-overlay-color: {overlay_color};
             --chat-overlay-opacity: {self._overlay_opacity()};
+            --chat-avatar-size: {self.avatar_size()}px;
         }}
         body {{
             background-color: var(--bg-color);
@@ -180,7 +200,7 @@ class Theme:
         if c.get("avatar_border_radius"):
             css += f"""
         .avatar img {{
-            border-radius: {c['avatar_border_radius']};
+            border-radius: {c["avatar_border_radius"]};
         }}
         """
         custom_css = self.config.get("custom_css", "")
@@ -194,13 +214,14 @@ class Theme:
         return f"""
         @media (prefers-color-scheme: dark) {{
             :root {{
-                --primary-color: {c.get('primary_color', '#61A5E0')};
-                --bg-color: {c.get('background_color', '#1F1F1F')};
-                --user-bubble: {c.get('user_bubble_color', '#2E7D32')};
-                --ai-bubble: {c.get('ai_bubble_color', '#2D2D2D')};
-                --text-color: {c.get('text_color', '#E0E0E0')};
-                --timestamp-color: {c.get('timestamp_color', '#888888')};
+                --primary-color: {c.get("primary_color", "#61A5E0")};
+                --bg-color: {c.get("background_color", "#1F1F1F")};
+                --user-bubble: {c.get("user_bubble_color", "#2E7D32")};
+                --ai-bubble: {c.get("ai_bubble_color", "#2D2D2D")};
+                --text-color: {c.get("text_color", "#E0E0E0")};
+                --timestamp-color: {c.get("timestamp_color", "#888888")};
                 --chat-overlay-color: {overlay_color};
+                --chat-avatar-size: {self.avatar_size()}px;
             }}
             body {{
                 background-color: var(--bg-color);

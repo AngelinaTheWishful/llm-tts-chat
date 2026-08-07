@@ -5,6 +5,7 @@ Phase 4：左右分栏主界面 + 配置向导（条件可见性）。
 
 import argparse
 import ctypes
+import json
 import os
 import socket
 import sys
@@ -111,6 +112,57 @@ body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: no
 #chat-area .chatbot,
 #chat-area .chatbot-wrap,
 #chat-area .messages {{ background: transparent !important; }}
+/* 章节九十三：聊天窗口左上角角色头像（独立固定头部，透明不遮挡聊天背景） */
+#chat-header-wrap {{
+    flex: 0 0 auto !important;
+    overflow: visible !important;
+}}
+#chat-header {{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    margin-bottom: 4px;
+    background: transparent !important;
+    position: relative;
+    z-index: 2;
+}}
+#chat-header .avatar-container {{
+    width: var(--chat-avatar-size, 128px);
+    height: var(--chat-avatar-size, 128px);
+    flex-shrink: 0;
+    position: relative;
+    border-radius: 50%;
+    overflow: hidden;
+    background: rgba(128,128,128,0.25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}}
+#chat-header .avatar-container img.chat-avatar-img {{
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+    display: block;
+}}
+#chat-header .avatar-container span.avatar-placeholder {{
+    font-size: calc(var(--chat-avatar-size, 128px) * 0.42);
+    color: #FFFFFF;
+    font-weight: 600;
+    user-select: none;
+}}
+#chat-header .chat-avatar-name {{
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-color);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.25);
+}}
+/* 头部透明化（组件外层 .block 有 --block-background-fill 不透明背景，须一并透明） */
+#chat-area #chat-header-wrap,
+#chat-area #chat-header-wrap .block,
+#chat-area #chat-header-wrap .gr-html {{ background: transparent !important; }}
+#chat-avatar-state {{ display: none !important; }}
 /* 章节八十六：移动端/响应式适配 */
 @media (max-width: 900px) {{
     #top-row {{ flex-wrap: wrap; }}
@@ -161,6 +213,38 @@ function init_ui() {
     }
     window.applyChatBackground = applyChatBackground;
     window.applyChatOverlay = applyChatOverlay;
+
+    // ---- 章节九十三：聊天窗口左上角角色头像 ----
+    function applyChatAvatar(path, name) {
+        const wrap = document.getElementById('chat-header');
+        if (!wrap) return;
+        const img = wrap.querySelector('.chat-avatar-img');
+        const ph = wrap.querySelector('.avatar-placeholder');
+        const nm = wrap.querySelector('.chat-avatar-name');
+        if (nm) nm.textContent = (name || '').trim();
+        const p = (path || '').trim();
+        if (img && p) {
+            const url = '/file=' + encodeURI(p.replace(/\\\\/g, '/')) + '?ts=' + Date.now();
+            img.src = url;
+            img.style.display = 'block';
+            if (ph) ph.style.display = 'none';
+        } else {
+            if (img) { img.src = ''; img.style.display = 'none'; }
+            if (ph) {
+                const ch = (name || '').trim().charAt(0);
+                ph.textContent = ch || '?';
+                ph.style.display = 'block';
+            }
+        }
+    }
+    function applyChatAvatarSize(size) {
+        const wrap = document.getElementById('chat-header');
+        if (wrap) {
+            wrap.style.setProperty('--chat-avatar-size', (parseInt(size, 10) || 128) + 'px');
+        }
+    }
+    window.applyChatAvatar = applyChatAvatar;
+    window.applyChatAvatarSize = applyChatAvatarSize;
 
     // ---- 章节八十五：侧栏拖动调整宽度 ----
     const MIN = 200, MAX = 600;
@@ -216,6 +300,20 @@ function init_ui() {
         const bgWrap = document.getElementById('chat-bg-state');
         const bgInput = bgWrap ? bgWrap.querySelector('input, textarea') : null;
         applyChatBackground(bgInput ? bgInput.value : '', false, 0, 'auto', '');
+        // 章节九十三：初始头像状态（路径 + 角色名）+ 持久化尺寸
+        const avWrap = document.getElementById('chat-avatar-state');
+        const avInput = avWrap ? avWrap.querySelector('input, textarea') : null;
+        let av = '';
+        let avName = '';
+        try {
+            const parsed = avInput ? JSON.parse(avInput.value || '{}') : {};
+            av = parsed.path || '';
+            avName = parsed.name || '';
+        } catch (e) { /* 忽略解析错误，回落空状态 */ }
+        applyChatAvatar(av, avName);
+        const szWrap = document.getElementById('chat-avatar-size-state');
+        const szInput = szWrap ? szWrap.querySelector('input') : null;
+        applyChatAvatarSize(szInput ? szInput.value : 128);
     }
     init();
 }
@@ -417,21 +515,25 @@ def switch_session_handler(session_id):
 
 
 def select_character_handler(name):
-    """切换角色（章节九十二）：返回 (状态文字, 聊天背景路径)。
+    """切换角色（章节九十二/九十三）：返回 (状态文字, 聊天背景路径, 头像状态)。
 
-    角色有背景图时经 gr.set_static_paths 注册该单文件（仅暴露该图，不暴露
+    角色有背景/头像图时经 gr.set_static_paths 注册该单文件（仅暴露该图，不暴露
     characters/ 整目录与 config.json），供前端 /file= 端点加载。
     """
     result = ui_service.select_character(name)
     if "error" in result:
-        return gr.update(value=f"🔴 {result['error']}"), ""
+        return gr.update(value=f"🔴 {result['error']}"), "", ""
     bg = result.get("background", "") or ""
-    if bg:
-        try:
-            gr.set_static_paths([bg])
-        except Exception as e:
-            logger.warning(f"背景图静态注册失败: {bg}: {e}")
-    return gr.update(value=f"🟢 角色: {name} | TTS 参数已应用"), bg
+    avatar = result.get("avatar", "") or ""
+    for p in (bg, avatar):
+        if p:
+            try:
+                gr.set_static_paths([p])
+            except Exception as e:
+                logger.warning(f"静态文件注册失败: {p}: {e}")
+    # 头像状态：JSON 携带头像路径 + 角色名（供首字占位与名字显示）
+    avatar_state = json.dumps({"path": avatar, "name": name}, ensure_ascii=False)
+    return gr.update(value=f"🟢 角色: {name} | TTS 参数已应用"), bg, avatar_state
 
 
 def save_chat_overlay_handler(enabled, opacity, mode, color):
@@ -449,6 +551,23 @@ def save_chat_overlay_handler(enabled, opacity, mode, color):
         logger.warning(f"聊天背景遮罩保存失败: {e}")
         return gr.update(visible=True, value=f"🔴 遮罩设置保存失败: {e}")
     return gr.update(visible=True, value="🟢 遮罩设置已保存")
+
+
+def save_chat_avatar_size_handler(size):
+    """章节九十三：保存聊天窗口头像尺寸（写入 theme_config.json，加锁）。
+
+    尺寸限定 128/256，非法值回落默认 128。
+    """
+    try:
+        size = int(size) if size else 128
+        if size not in (128, 256):
+            size = 128
+        theme.config.setdefault("chat_avatar", {})["size"] = size
+        theme.save()
+    except Exception as e:
+        logger.warning(f"头像尺寸保存失败: {e}")
+        return gr.update(visible=True, value=f"🔴 头像尺寸保存失败: {e}")
+    return gr.update(visible=True, value=f"🟢 头像尺寸已设为 {size}px")
 
 
 def preview_chat_bg_handler(file):
@@ -1427,6 +1546,13 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                         label=i18n.t("自定义遮罩色"),
                     )
                     chat_overlay_status = gr.Markdown(visible=False)
+                    # 章节九十三：聊天窗口头像尺寸（128/256 两档，即时生效并持久化）
+                    chat_avatar_size_dd = gr.Dropdown(
+                        [("128px", 128), ("256px", 256)],
+                        value=int(theme.avatar_size()),
+                        label=i18n.t("头像尺寸"),
+                    )
+                    chat_avatar_status = gr.Markdown(visible=False)
 
                 with gr.Accordion(i18n.t("会话"), open=False):
                     new_session_btn = gr.Button(i18n.t("新建会话"))
@@ -1672,8 +1798,24 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                 )
                 # 章节九十二：聊天背景路径同步组件（隐藏，前端 JS 读取后经 /file= 加载）
                 chat_bg_state = gr.Textbox(elem_id="chat-bg-state")
+                # 章节九十三：头像状态同步组件（隐藏，JSON {path, name}，
+                # 前端 JS 读取后经 /file= 加载）
+                chat_avatar_state = gr.Textbox(elem_id="chat-avatar-state")
+                # 章节九十三：头像尺寸同步组件（隐藏，仅前端 JS 经 elem_id 读取）
+                gr.Number(value=int(theme.avatar_size()), elem_id="chat-avatar-size-state")
                 # 章节九十二：聊天主区域（背景图 + 遮罩应用在此容器）
                 with gr.Column(elem_id="chat-area"):
+                    # 章节九十三：聊天窗口左上角角色头像（独立固定头部，透明不遮挡聊天背景）
+                    gr.HTML(
+                        '<div id="chat-header-wrap"><div id="chat-header">'
+                        '<div class="avatar-container">'
+                        '<img class="chat-avatar-img" src="" alt="" style="display:none" />'
+                        '<span class="avatar-placeholder" style="display:none"></span>'
+                        "</div>"
+                        '<span class="chat-avatar-name"></span>'
+                        "</div></div>",
+                        elem_id="chat-header-wrap",
+                    )
                     chatbot = gr.Chatbot(
                         label=i18n.t("聊天"),
                         type="tuples",
@@ -1826,7 +1968,7 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
     character_dropdown.change(
         fn=select_character_handler,
         inputs=[character_dropdown],
-        outputs=[status_text, chat_bg_state],
+        outputs=[status_text, chat_bg_state, chat_avatar_state],
     )
     # 章节九十二：背景路径更新后前端即时应用（不刷新页面）
     chat_bg_state.change(
@@ -1843,6 +1985,28 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
             "(p, enabled, opacity, mode, color) => "
             "{ window.applyChatBackground(p, enabled, opacity, mode, color); }"
         ),
+    )
+    # 章节九十三：头像状态（JSON {path,name}）更新后前端即时应用（不刷新页面）
+    chat_avatar_state.change(
+        fn=None,
+        inputs=[chat_avatar_state],
+        outputs=[],
+        js=(
+            "(state) => { try { const d = JSON.parse(state || '{}');"
+            " window.applyChatAvatar(d.path || '', d.name || ''); } catch(e) {} }"
+        ),
+    )
+    # 章节九十三：头像尺寸选择即时应用 + 持久化
+    chat_avatar_size_dd.change(
+        fn=None,
+        inputs=[chat_avatar_size_dd],
+        outputs=[],
+        js="(size) => { window.applyChatAvatarSize(size); }",
+    )
+    chat_avatar_size_dd.change(
+        fn=save_chat_avatar_size_handler,
+        inputs=[chat_avatar_size_dd],
+        outputs=[chat_avatar_status],
     )
     character_dropdown.change(
         fn=load_character_to_editor,

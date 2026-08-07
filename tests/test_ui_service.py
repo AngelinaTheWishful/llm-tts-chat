@@ -175,3 +175,28 @@ def test_last_audio_file_rejects_path_traversal(tmp_path):
     (sdir / "messages.json").write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
 
     assert ui._last_audio_file(session) is None  # 越界路径被拒绝
+
+
+def test_select_character_returns_avatar_path(tmp_path):
+    """章节九十三：select_character 返回角色头像路径（portrait.png 存在时）。"""
+    # 头像角色（带 portrait.png）
+    char_dir = tmp_path / "chars" / "头像角色"
+    char_dir.mkdir(parents=True)
+    (char_dir / "character.json").write_text(
+        json.dumps({"name": "头像角色"}, ensure_ascii=False), encoding="utf-8"
+    )
+    (char_dir / "portrait.png").write_bytes(b"PNGDATA")
+
+    ui = make_service(tmp_path)
+    result = ui.select_character("头像角色")
+    assert "error" not in result
+    assert result["character"] == "头像角色"
+    assert result["avatar"] == str(char_dir / "portrait.png")
+
+
+def test_select_character_avatar_empty_when_missing(tmp_path):
+    """章节九十三：无 portrait.png 时 avatar 返回空串（前端回落首字占位）。"""
+    ui = make_service(tmp_path)
+    result = ui.select_character("问候角色")  # make_service 未建头像文件
+    assert "error" not in result
+    assert result["avatar"] == ""

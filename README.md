@@ -4,7 +4,7 @@
 
 基于 Gradio 的角色扮演聊天应用，集成 LLM（OpenAI 兼容 API）与 GPT-SoVITS 语音合成。
 
-> **v1.3.4 已发布**（2026-08-06）· [GitHub Releases](https://github.com/AngelinatheMellowWish/llm-tts-chat/releases)
+> **v1.3.5 已发布**（2026-08-07）· [GitHub Releases](https://github.com/AngelinatheMellowWish/llm-tts-chat/releases)
 
 ## 功能概述
 
@@ -14,6 +14,7 @@
 - **角色系统**：JSON 配置 + 头像 + 参考音频 + Lorebook 世界观知识库
 - **角色卡导入**：支持 TavernAI（PNG/JSON）、RisuAI、Chub、Character.AI 角色卡自动检测导入（含头像）
 - **角色聊天背景**（v1.3.1）：在角色文件夹放置背景图（`background.png` 或 `character.json` 的 `background` 字段），聊天区背景随角色选择即时切换；支持 png/jpg/jpeg/webp/gif（含动图，≤200MB）；遮罩透明度/配色可调（自动随明暗 + 手动）、全局开关、编辑面板上传预览
+- **聊天窗口角色头像**（v1.3.5）：聊天窗口左上角固定显示当前角色 `portrait.png` 头像 + 角色名（不随消息滚动、不遮聊天背景）；无头像自动回落角色名首字圆形占位；侧栏可切换 128/256px 两档尺寸并持久化
 - **移动端适配**：窄屏（≤900px）自动切换上下堆叠布局
 - **角色编辑**：WebUI 表单编辑（性格/口癖/背景/CoT/Lorebook/头像）
 - **消息收藏/搜索/统计**：星标收藏、会话内搜索、全局统计看板
@@ -75,7 +76,7 @@
 - 分支策略: main（稳定） + dev（开发），禁止直接提交 main
 - Commit 规范: Conventional Commits（英文标题 + 中文正文）
 - 代码规范: PEP 8 + ruff（`ruff check app.py modules/ tests/`）
-- 测试: `pytest tests/ -v`（196 项单元/集成测试）
+- 测试: `pytest tests/ -v`（203 项单元/集成测试）
 - 详细开发文档为机密文件，仅本机维护，不随仓库发布（见下方「开发文档」）
 
 ## 开发文档

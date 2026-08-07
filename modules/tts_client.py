@@ -344,7 +344,7 @@ class TTSClient(BaseManager):
                     delay = 1.0 * (2**attempt)
                     self.log(
                         "warning",
-                        f"[TTS-003] TTS 合成失败，{delay:.0f}s 后重试 " f"({attempt + 1}/3): {e}",
+                        f"[TTS-003] TTS 合成失败，{delay:.0f}s 后重试 ({attempt + 1}/3): {e}",
                     )
                     time.sleep(delay)
         raise RuntimeError(f"[TTS-003] TTS 合成失败已达最大重试次数: {last_error}")
