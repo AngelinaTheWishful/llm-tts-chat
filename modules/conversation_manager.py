@@ -9,6 +9,7 @@
 
 import json
 import random
+import re
 import shutil
 import string
 import threading
@@ -245,15 +246,21 @@ class ConvManager(BaseManager):
         role: str,
         content: str,
         audio_data: bytes | None = None,
+        character: str = "",
+        message_version: int = 1,
     ) -> dict:
-        """追加消息。有 audio_data 时保存为 audio/msg_N.wav。每条消息分配唯一 msg_id（R5）。"""
+        """追加消息。有 audio_data 时按新命名规范保存音频（章节九十五）。
+
+        音频命名：`audio/{角色名}_{会话名}_{合成时间}_v{应用版本}_m{消息版本}.wav`，
+        合成时间为落盘时刻（YYYYMMDD_HHMMSS）；消息写入 `character` 字段。
+        每条消息分配唯一 msg_id（R5）。
+        """
         with self._lock:
             sdir = self.dir / session_id
             if not sdir.exists():
                 raise FileNotFoundError(f"会话不存在: {session_id}")
 
             messages = self._read_messages(sdir)
-            msg_index = len(messages)
 
             message: dict = {
                 "msg_id": uuid.uuid4().hex[:12],
@@ -261,13 +268,15 @@ class ConvManager(BaseManager):
                 "content": content,
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
             }
+            if character:
+                message["character"] = character
 
             if audio_data:
                 audio_dir = sdir / "audio"
                 audio_dir.mkdir(exist_ok=True)
-                audio_file = f"audio/msg_{msg_index}.wav"
-                (audio_dir / f"msg_{msg_index}.wav").write_bytes(audio_data)
-                message["audio_file"] = audio_file
+                audio_name = self._audio_filename(sdir, character, int(message_version or 1))
+                (audio_dir / audio_name).write_bytes(audio_data)
+                message["audio_file"] = f"audio/{audio_name}"
 
             messages.append(message)
             self._write_json(sdir / "messages.json", messages)
@@ -275,6 +284,24 @@ class ConvManager(BaseManager):
             self._write_text(sdir / "updated_at.txt", _now_stamp())
             self._invalidate_meta(session_id)
             return message
+
+    @staticmethod
+    def _audio_filename(sdir: Path, character: str, message_version: int = 1) -> str:
+        """生成音频文件名（章节九十五）：{角色}_{会话}_{时间戳}_v{版本}_m{消息版本}.wav。"""
+        from modules.version import APP_VERSION
+
+        char = ConvManager._sanitize_filename(character) or "unknown"
+        session_name = ConvManager._read_name(sdir)
+        sess = ConvManager._sanitize_filename(session_name) or "session"
+        ts = _now_stamp()
+        return f"{char}_{sess}_{ts}_{APP_VERSION}_m{int(message_version or 1)}.wav"
+
+    @staticmethod
+    def _sanitize_filename(name: str, limit: int = 40) -> str:
+        """清洗文件名非法字符（\\ / : * ? " < > | 及控制字符）并截断，用于音频命名。"""
+        cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", str(name or ""))
+        cleaned = cleaned.strip().strip(".").replace("..", "_")
+        return cleaned[:limit]
 
     def remove_last_message(self, session_id: str, role: str | None = None) -> dict | None:
         """删除最后一条消息（R4：LLM 失败时回滚刚保存的用户消息）。

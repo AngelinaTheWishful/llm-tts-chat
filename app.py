@@ -911,7 +911,7 @@ def search_session_handler(query):
 
 def stats_handler():
     if not ui_service.active_session:
-        return gr.update(value="（请先选择或创建会话）")
+        return gr.update(value="（请先选择或创建会话）", visible=True)
     s = conv_mgr.get_session_stats(ui_service.active_session)
     g = conv_mgr.get_global_stats()
     most = g["most_active_session"]
@@ -925,7 +925,7 @@ def stats_handler():
     )
     if most:
         text += f"最活跃会话: {most['name']}（{most['msg_count']} 条）"
-    return gr.update(value=text)
+    return gr.update(value=text, visible=True)
 
 
 # ---------- 会话回收站（R3） ----------
@@ -950,6 +950,39 @@ def delete_session_handler():
         gr.update(visible=False, value=None),
         _status_text(),
         gr.update(value="🟢 会话已删除，可在「工具-回收站」恢复"),
+    )
+
+
+def rename_session_handler(new_name):
+    """章节九十五：重命名当前选中会话（写 name.txt + 刷新会话下拉列表）。"""
+    if not ui_service.active_session:
+        gr.Info("请先选择一个会话再重命名")
+        return gr.update(), gr.update(value="🔴 请先选择一个会话再重命名")
+    new_name = (new_name or "").strip()
+    if not new_name:
+        gr.Info("会话名称不能为空")
+        return gr.update(), gr.update(value="🔴 会话名称不能为空")
+    if conv_mgr.rename_session(ui_service.active_session, new_name):
+        sessions = conv_mgr.list_sessions()
+        gr.Info("🟢 会话已重命名")
+        return (
+            gr.update(choices=[(s["name"], s["id"]) for s in sessions]),
+            gr.update(value="🟢 会话已重命名"),
+        )
+    gr.Info("重命名失败：会话不存在")
+    return gr.update(), gr.update(value="🔴 重命名失败：会话不存在")
+
+
+def download_audio_handler():
+    """章节九十五：下载当前语音（音频文件名已带 角色/会话/时间戳/版本/消息版本）。"""
+    path = ui_service.last_audio_path
+    if not path or not Path(path).is_file():
+        gr.Info("当前没有可下载的语音")
+        return gr.update(value=None), gr.update(value="🔴 当前没有可下载的语音", visible=True)
+    gr.Info("🟢 语音已就绪，可点击下方文件下载")
+    return (
+        gr.update(value=path),
+        gr.update(value="🟢 语音已就绪，文件名已含时间戳与版本号", visible=True),
     )
 
 
@@ -1589,6 +1622,10 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                     )
                     delete_session_btn = gr.Button(i18n.t("删除会话（入回收站）"))
                     delete_session_status = gr.Markdown(visible=False)
+                    # 章节九十五：会话名称侧栏编辑（选中会话 → 输入新名 → 重命名）
+                    rename_input = gr.Textbox(label="重命名会话", placeholder="输入新会话名")
+                    rename_btn = gr.Button("重命名会话")
+                    rename_status = gr.Markdown(visible=False)
 
                 with gr.Accordion("配置", open=False):
                     _active_cfg = config_mgr.get_active_provider_config()
@@ -1856,6 +1893,11 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
                         height=CHAT_HEIGHT,
                     )
                 audio_player = gr.Audio(label=i18n.t("语音回复"), type="filepath", visible=False)
+                # 章节九十五：播放器旁「下载语音」（文件名已带 角色/会话/时间戳/版本/消息版本）
+                with gr.Row():
+                    audio_download_btn = gr.Button("⬇️ 下载当前语音")
+                    audio_download_file = gr.File(label="下载语音", visible=False)
+                audio_download_status = gr.Markdown(visible=False)
                 with gr.Row():
                     fav_btn = gr.Button("⭐ 收藏最后一条回复")
                     fav_status = gr.Markdown(visible=False)
@@ -1949,6 +1991,17 @@ def build_wizard() -> tuple[gr.Group, gr.Group]:
     delete_session_btn.click(
         fn=delete_session_handler,
         outputs=[session_radio, chatbot, audio_player, status_text, delete_session_status],
+    )
+    # 章节九十五：会话重命名（选中会话 → 输入新名 → 刷新会话下拉列表）
+    rename_btn.click(
+        fn=rename_session_handler,
+        inputs=[rename_input],
+        outputs=[session_radio, rename_status],
+    )
+    # 章节九十五：下载当前语音
+    audio_download_btn.click(
+        fn=download_audio_handler,
+        outputs=[audio_download_file, audio_download_status],
     )
 
     trash_refresh_btn.click(

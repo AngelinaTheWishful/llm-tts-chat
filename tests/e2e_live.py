@@ -763,6 +763,49 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
     else:
         check("B26 gsv_root 刷新", False, "端点缺失")
 
+    # B27 章节九十五：会话名称侧栏重命名
+    if has("new_session_handler") and has("rename_session_handler"):
+        try:
+            call("new_session_handler", timeout=30)
+            r = call("rename_session_handler", "重命名后的会话", timeout=30)
+            val = "".join(str(u) for u in flatten_updates(r))
+            check("B27a 会话重命名成功", "已重命名" in val, val[:60])
+            check("B27b 会话列表更新", "重命名后的会话" in val, val[:80])
+            r2 = call("rename_session_handler", "   ", timeout=30)
+            val2 = "".join(str(u) for u in flatten_updates(r2))
+            check("B27c 重命名空名称报错", "不能为空" in val2, val2[:60])
+        except Exception as e:
+            check("B27 会话重命名", False, str(e))
+    else:
+        check("B27 会话重命名", False, "端点缺失")
+
+    # B28 章节九十五：统计面板可见化（点击后可见 + 含统计内容）
+    if has("stats_handler"):
+        try:
+            r = call("stats_handler", timeout=30)
+            flat = flatten_updates(r)
+            val = "".join(str(u) for u in flat)
+            has_visible = any(isinstance(u, dict) and u.get("visible") is True for u in flat)
+            check("B28a 统计面板可见", has_visible, val[:60])
+            check("B28b 统计含统计内容", "消息数" in val, val[:80])
+        except Exception as e:
+            check("B28 统计可见", False, str(e))
+    else:
+        check("B28 统计可见", False, "端点缺失")
+
+    # B29 章节九十五：下载语音 handler（TTS 离线 → 友好提示不报错）
+    if has("download_audio_handler"):
+        try:
+            r = call("download_audio_handler", timeout=30)
+            flat = flatten_updates(r)
+            val = "".join(str(u) for u in flat)
+            ok = len(flat) >= 1 and ("没有可下载的语音" in val or "语音已就绪" in val)
+            check("B29 下载语音 handler", ok, val[:60])
+        except Exception as e:
+            check("B29 下载语音", False, str(e))
+    else:
+        check("B29 下载语音", False, "端点缺失")
+
 
 def run_server_checks():
     work = Path(tempfile.mkdtemp(prefix="llm_tts_e2e_"))

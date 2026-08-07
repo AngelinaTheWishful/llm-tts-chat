@@ -259,8 +259,15 @@ class UiService(BaseManager):
             tts_notice = "[TTS-001] TTS API 离线，本次回复无语音"
             _rstep("TTS 合成", status="WARN", code="TTS-001", detail="API 离线")
 
-        # 8. 保存 AI 回复
-        self.conv_mgr.add_message(session_id, "assistant", reply, audio_data)
+        # 8. 保存 AI 回复（章节九十五：音频新命名，携带角色名 + 消息版本 1）
+        self.conv_mgr.add_message(
+            session_id,
+            "assistant",
+            reply,
+            audio_data,
+            character=self.active_character or "",
+            message_version=1,
+        )
 
         # 9. 更新音频路径
         self.last_audio_path = self._last_audio_file(session_id)
@@ -358,7 +365,12 @@ class UiService(BaseManager):
         except Exception as e:
             # 恢复旧回复（含音频），避免数据丢失
             self.conv_mgr.add_message(
-                session_id, "assistant", old.get("content", ""), old_audio_bytes
+                session_id,
+                "assistant",
+                old.get("content", ""),
+                old_audio_bytes,
+                character=old.get("character", "") or self.active_character or "",
+                message_version=1,
             )
             self.log("error", f"重新生成失败（已恢复旧回复）: {e}")
             return {"error": format_error(e, prefix="重新生成失败")}
@@ -387,7 +399,15 @@ class UiService(BaseManager):
                 self.log("warning", f"重新生成 TTS 失败（不影响文字）: {e}")
                 tts_notice = f"{format_error(e, prefix='')}，本次回复无语音"
 
-        new_msg = self.conv_mgr.add_message(session_id, "assistant", reply, audio_data)
+        # 章节九十五：重新生成的消息版本为 2+（携带角色名）
+        new_msg = self.conv_mgr.add_message(
+            session_id,
+            "assistant",
+            reply,
+            audio_data,
+            character=self.active_character or "",
+            message_version=2,
+        )
         # 旧回复保留为版本记录（Q7 多版本追溯）
         if old.get("content") and new_msg.get("msg_id"):
             try:
@@ -569,7 +589,15 @@ class UiService(BaseManager):
 
         voice_lang = self.config_mgr.get("tts", {}).get("voice_language", "中文")
         audio = self._synthesize_speech(greeting, voice_lang)
-        self.conv_mgr.add_message(self.active_session, "assistant", greeting, audio)
+        # 章节九十五：问候语音频携带角色名 + 消息版本 1
+        self.conv_mgr.add_message(
+            self.active_session,
+            "assistant",
+            greeting,
+            audio,
+            character=self.active_character or "",
+            message_version=1,
+        )
         self.log("info", f"已添加角色问候语: {self.active_character}")
 
     def switch_session(self, session_id: str) -> dict:

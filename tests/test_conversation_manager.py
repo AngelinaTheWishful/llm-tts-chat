@@ -44,14 +44,69 @@ def test_create_and_list_session(tmp_path):
 
 def test_add_message_and_get(tmp_path):
     mgr = ConvManager(tmp_path)
-    sid = mgr.create_session()
+    sid = mgr.create_session("日常")
     mgr.add_message(sid, "user", "你好")
     mgr.add_message(sid, "assistant", "你好呀", audio_data=b"WAVDATA")
 
     messages = mgr.get_messages(sid)
     assert len(messages) == 2
-    assert messages[1]["audio_file"] == "audio/msg_1.wav"
-    assert (tmp_path / sid / "audio" / "msg_1.wav").read_bytes() == b"WAVDATA"
+    # 章节九十五：音频命名规范（角色_会话_时间戳_v版本_m消息版本）
+    assert messages[1]["audio_file"].startswith("audio/unknown_日常_")
+    assert messages[1]["audio_file"].endswith("_v1.3.7_m1.wav")
+    audio_rel = messages[1]["audio_file"]
+    assert (tmp_path / sid / audio_rel).read_bytes() == b"WAVDATA"
+
+
+def test_audio_filename_format_and_fields(tmp_path):
+    """章节九十五：音频文件名带角色名/会话名/时间戳/应用版本/消息版本，消息写入 character 字段。"""
+    mgr = ConvManager(tmp_path)
+    sid = mgr.create_session("暴行-1")
+    msg = mgr.add_message(
+        sid, "assistant", "你好", audio_data=b"WAV", character="暴行", message_version=2
+    )
+    assert msg["character"] == "暴行"
+    audio_name = msg["audio_file"]
+    parts = audio_name.split("/")[-1]
+    assert parts.startswith("暴行_暴行-1_")
+    assert "_v1.3.7_m2.wav" in parts
+    # 时间戳为 8 位日期 + 6 位时间
+    import re
+
+    m = re.search(r"_(\d{8})_(\d{6})_v1.3.7_m2\.wav$", parts)
+    assert m is not None
+    assert (tmp_path / sid / audio_name).read_bytes() == b"WAV"
+
+
+def test_audio_filename_sanitizes_illegal_chars(tmp_path):
+    """章节九十五：角色/会话名含非法文件名字符时被清洗为下划线。"""
+    mgr = ConvManager(tmp_path)
+    sid = mgr.create_session("会话/名:含?特殊*字符")
+    msg = mgr.add_message(sid, "assistant", "hi", audio_data=b"WAV", character="角色/名:含?")
+    fname = msg["audio_file"].split("/")[-1]  # 不含 audio/ 前缀
+    assert ":" not in fname
+    assert "/" not in fname
+    assert "*" not in fname
+    assert fname.startswith("角色_名_含_")  # 清洗后角色名
+
+
+def test_audio_filename_truncates_long_names(tmp_path):
+    """章节九十五：超长角色/会话名被截断（默认 40 字符）。"""
+    mgr = ConvManager(tmp_path)
+    long_name = "长" * 80
+    sid = mgr.create_session(long_name)
+    msg = mgr.add_message(sid, "assistant", "hi", audio_data=b"WAV", character=long_name)
+    segments = msg["audio_file"].split("/")[-1].split("_")
+    assert len(segments[0]) <= 40  # 角色名截断
+    assert len(segments[1]) <= 40  # 会话名截断
+    assert "长" in segments[0]
+
+
+def test_add_message_without_character_no_field(tmp_path):
+    """章节九十五：未传角色时消息不写 character 字段。"""
+    mgr = ConvManager(tmp_path)
+    sid = mgr.create_session()
+    msg = mgr.add_message(sid, "assistant", "hi", audio_data=b"WAV")
+    assert "character" not in msg
 
 
 def test_delete_and_rename(tmp_path):
@@ -114,7 +169,10 @@ def test_export_and_import_session(tmp_path):
     assert new_sid is not None
     messages = mgr2.get_messages(new_sid)
     assert len(messages) == 2
-    assert messages[1]["audio_file"] == "audio/msg_1.wav"
+    # 章节九十五：导入后音频引用保留新命名
+    assert messages[1]["audio_file"].startswith("audio/")
+    assert messages[1]["audio_file"].endswith("_v1.3.7_m1.wav")
+    assert (tmp_path / "convs2" / new_sid / messages[1]["audio_file"]).exists()
 
 
 def test_import_session_rejects_invalid(tmp_path):
@@ -355,7 +413,8 @@ def test_remove_last_message_rollback(tmp_path):
     assert removed["content"] == "回复"
     messages = mgr.get_messages(sid)
     assert len(messages) == 1
-    assert not (tmp_path / sid / "audio" / "msg_1.wav").exists()
+    # 章节九十五：删除消息时清理对应新命名音频文件
+    assert not (tmp_path / sid / removed["audio_file"]).exists()
 
     removed2 = mgr.remove_last_message(sid, role="user")
     assert removed2["content"] == "你好"
