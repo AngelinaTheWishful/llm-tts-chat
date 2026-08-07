@@ -18,6 +18,10 @@
 - pytest 全量 **203** 项（新增：theme chat_avatar 默认/合并/非法值回落/CSS 注入/保存，ui_service select_character 头像路径存在/缺失）
 - e2e_live **50/50**（新增 B24a-d：头像路径返回、头像状态含角色名、尺寸持久化、头像经 `/file=` 加载）
 
+### 修复
+
+- **头像尺寸同步组件暴露为可见数字框**（发布后缺陷）：`chat-avatar-size-state`（`gr.Number`）漏加隐藏 CSS，聊天区上方显示只读数字框（128/256）；已补 `display:none` 并新增 e2e B25 回归用例（e2e **51/51**）
+
 ## [v1.3.4] - 2026-08-06
 
 ### 文档

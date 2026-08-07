@@ -258,6 +258,17 @@ def server_checks(work: Path, port: int, proc: subprocess.Popen):
     except Exception as e:
         check("B16 侧栏元素与 JS", False, str(e))
 
+    # 章节九十三：头像尺寸隐藏同步组件不得暴露为可见数字框（CSS 须 display:none）
+    try:
+        html = requests.get(base, timeout=10).text
+        check(
+            "B25 头像尺寸隐藏 CSS",
+            "chat-avatar-size-state" in html
+            and "#chat-avatar-size-state{display:none" in html.replace(" ", ""),
+        )
+    except Exception as e:
+        check("B25 头像尺寸隐藏 CSS", False, str(e))
+
     # 发现 API 端点（Gradio 4 的 info 在 /info）
     try:
         info = requests.get(f"{base}/info", timeout=10).json()

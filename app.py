@@ -163,6 +163,7 @@ body.resizing, body.resizing * {{ cursor: col-resize !important; user-select: no
 #chat-area #chat-header-wrap .block,
 #chat-area #chat-header-wrap .gr-html {{ background: transparent !important; }}
 #chat-avatar-state {{ display: none !important; }}
+#chat-avatar-size-state {{ display: none !important; }}
 /* 章节八十六：移动端/响应式适配 */
 @media (max-width: 900px) {{
     #top-row {{ flex-wrap: wrap; }}
